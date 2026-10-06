@@ -96,6 +96,14 @@ test_that("two workers give the same results as one", {
     work3 <- new_dir()
     log3 <- run(work3, workers = "2")
     expect_null(attr(log3, "status"), info = tail_of(log3))
+    # each worker gets half of the CPU quota of the container as torch threads
+    q <- if (file.exists("/sys/fs/cgroup/cpu.max")) {
+        strsplit(readLines("/sys/fs/cgroup/cpu.max", n = 1), " ")[[1]]
+    } else {
+        "max"
+    }
+    cores <- if (q[[1]] == "max") parallel::detectCores() else as.numeric(q[[1]]) %/% as.numeric(q[[2]])
+    expect_equal(sum(grepl(paste0("torch threads ", max(1, cores %/% 2), "$"), log3)), 2)
     for (f in c(0.1, 0.5, 1)) {
         expect_equal(no_seconds(task_file(work3, "ts_mlp", f)), no_seconds(task_file(work, "ts_mlp", f)))
     }

@@ -261,7 +261,25 @@ run_task <- function(task) {
 #
 # 6. Run the tasks, in parallel when there is more than one worker
 #
+# torch opens one thread per visible core (248 on the server), more than
+# the CPU quota of the container (112); each worker gets quota / workers
+cpu_cores <- function() {
+  cpu_max <- "/sys/fs/cgroup/cpu.max"
+  if (file.exists(cpu_max)) {
+    quota <- strsplit(readLines(cpu_max, n = 1), " ")[[1]]
+    if (quota[[1]] != "max") {
+      return(as.numeric(quota[[1]]) %/% as.numeric(quota[[2]]))
+    }
+  }
+  parallel::detectCores()
+}
+set_threads <- function(n_threads) {
+  torch::torch_set_num_threads(n_threads)
+  message(glue("worker {Sys.getpid()}: torch threads {torch::torch_get_num_threads()}"))
+}
+n_threads <- max(1, cpu_cores() %/% n_workers)
 if (n_workers <= 1) {
+  set_threads(n_threads)
   invisible(lapply(tasks, run_task))
 } else if (length(tasks) > 0) {
   # outfile = "": the messages of the workers go to this log
@@ -272,6 +290,7 @@ if (n_workers <= 1) {
     library(glue)
     loadNamespace("fs")
   })
+  parallel::clusterCall(cl, set_threads, n_threads)
   parallel::clusterExport(cl, c(
     "results_dir", "samples_file", "read_samples", "base_stream",
     "round_stream", "fraction_stream", "split_file", "task_file",
