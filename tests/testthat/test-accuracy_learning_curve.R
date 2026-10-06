@@ -20,6 +20,8 @@ run <- function(dir, fractions = "0.1,0.5,1", methods = "ts_mlp", workers = "1",
         stdout = TRUE, stderr = TRUE
     ))
 }
+# the last lines of a run's log, shown when the run fails
+tail_of <- function(log) paste(utils::tail(log, 30), collapse = "\n")
 results <- function(dir) file.path(dir, "data", "results", "learning_curve")
 task_file <- function(dir, method, frac, round = 1) {
     file.path(results(dir), sprintf("round_%02d_%s_f%03d.csv", round, method, round(frac * 100)))
@@ -34,7 +36,7 @@ labels <- sits::samples_modis_ndvi[["label"]]
 count <- function(ids) as.vector(table(factor(labels[ids], levels = sort(unique(labels)))))
 
 test_that("the script ends and writes the split and one table per fraction", {
-    expect_null(attr(log, "status"))
+    expect_null(attr(log, "status"), info = tail_of(log))
     expect_true(file.exists(file.path(results(work), "round_01_split.rds")))
     for (f in c(0.1, 0.5, 1)) expect_true(file.exists(task_file(work, "ts_mlp", f)))
 })
@@ -80,7 +82,8 @@ test_that("a second run skips every task that is done", {
 
 test_that("a fraction gives the same samples and result without the other fractions", {
     work2 <- new_dir()
-    expect_null(attr(run(work2, "0.5,1"), "status"))
+    log2 <- run(work2, "0.5,1")
+    expect_null(attr(log2, "status"), info = tail_of(log2))
     split2 <- readRDS(file.path(results(work2), "round_01_split.rds"))
     expect_identical(split2$valid, split$valid)
     expect_identical(split2$train[["0.5"]], split$train[["0.5"]])
@@ -91,7 +94,8 @@ test_that("a fraction gives the same samples and result without the other fracti
 
 test_that("two workers give the same results as one", {
     work3 <- new_dir()
-    expect_null(attr(run(work3, workers = "2"), "status"))
+    log3 <- run(work3, workers = "2")
+    expect_null(attr(log3, "status"), info = tail_of(log3))
     for (f in c(0.1, 0.5, 1)) {
         expect_equal(no_seconds(task_file(work3, "ts_mlp", f)), no_seconds(task_file(work, "ts_mlp", f)))
     }
@@ -123,7 +127,7 @@ test_that("encoded samples are read from disk once per worker, not per round", {
     enc[["id"]] <- seq_len(nrow(enc))
     saveRDS(enc, file.path(results(work5), "encoded_btwins.rds"))
     log5 <- run(work5, "0.5,1", "btwins", rounds = "2")
-    expect_null(attr(log5, "status"))
+    expect_null(attr(log5, "status"), info = tail_of(log5))
     expect_equal(sum(grepl("encoded btwins: read from", log5)), 1)
     expect_true(file.exists(task_file(work5, "btwins", 1, round = 2)))
 })
