@@ -42,3 +42,28 @@ step 4 to measure the accuracy of the classification of the Alpha Earth
 embeddings for year 2018. This classification has been done using the
 same set of labelled samples used in step 5. 
 
+7. `accuracy_learning_curve.R`: measures which method reaches a given
+accuracy with fewer training samples. It compares the LeJEPA, VICReg and
+Barlow Twins encoders, frozen, each with an MLP trained on its embeddings,
+against an MLP and a TempCNN trained on the raw time series. Each round
+draws a new split of the labelled samples, 30% of each class for
+validation and 70% for training, and trains every method on the same
+nested fractions of the 70%. The result is one CSV per round and method
+with overall accuracy, kappa, F1 per class and run time. Optional
+arguments are the number of rounds, the fractions and the methods; a stage
+run of one round, two fractions, one encoder and the MLP on the raw time
+series:
+
+```
+Rscript analysis/accuracy_learning_curve.R 1 0.05,1 btwins,ts_mlp
+```
+
+## Tests
+
+The test runs the learning curve on the MODIS samples of `sits` and checks
+the split, the nested fractions and the accuracy table. From the
+repository root:
+
+```
+Rscript -e 'testthat::test_file("tests/testthat/test-accuracy_learning_curve.R")'
+```

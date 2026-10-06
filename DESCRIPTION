@@ -15,3 +15,4 @@ Description: This package evaluates foundational models for satellite image time
 License: GPL-3
 Encoding: UTF-8
 LazyData: true
+Suggests: testthat, withr
