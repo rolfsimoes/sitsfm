@@ -266,9 +266,11 @@ if (n_workers <= 1) {
 } else if (length(tasks) > 0) {
   # outfile = "": the messages of the workers go to this log
   cl <- parallel::makePSOCKcluster(min(n_workers, length(tasks)), outfile = "")
+  # fs gives the `/` of the paths; sits does not load it
   parallel::clusterEvalQ(cl, {
     library(sits)
     library(glue)
+    loadNamespace("fs")
   })
   parallel::clusterExport(cl, c(
     "results_dir", "samples_file", "read_samples", "base_stream",
