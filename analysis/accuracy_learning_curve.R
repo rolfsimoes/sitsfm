@@ -237,7 +237,13 @@ run_task <- function(task) {
       batch_size = 128
     )
   }
+  # threads of this training: the CPU quota shared with the processes
+  # training on the GPU now, other runs included
+  set_threads(task_threads(), quiet = TRUE)
   ml_model <- sits_train(samples = samples_red, ml_method = ml_method)
+  if (torch::cuda_is_available()) {
+    assign("on_gpu", TRUE, envir = worker_cache)
+  }
   class_pts <- sits_classify(
     data = validation_samples,
     ml_model = ml_model,
@@ -278,7 +284,9 @@ run_task <- function(task) {
 # 6. Run the tasks, in parallel when there is more than one worker
 #
 # torch opens one thread per visible core (248 on the server), more than
-# the CPU quota of the container (112); each worker gets quota / workers
+# the CPU quota of the container (112). The sum of the torch threads of all
+# processes training on the GPU must stay within the quota, other runs
+# included: before each task, the quota is divided by those processes.
 cpu_cores <- function() {
   cpu_max <- "/sys/fs/cgroup/cpu.max"
   if (file.exists(cpu_max)) {
@@ -289,11 +297,38 @@ cpu_cores <- function() {
   }
   parallel::detectCores()
 }
-set_threads <- function(n_threads) {
+cpu_quota <- cpu_cores()
+# processes with a CUDA context; 0 without nvidia-smi or GPU
+gpu_processes <- function() {
+  pids <- tryCatch(
+    suppressWarnings(system2(
+      "nvidia-smi", c("--query-compute-apps=pid", "--format=csv,noheader"),
+      stdout = TRUE, stderr = FALSE
+    )),
+    error = function(e) character(0)
+  )
+  if (!is.null(attr(pids, "status"))) {
+    return(0)
+  }
+  sum(nzchar(trimws(pids)))
+}
+task_threads <- function() {
+  n_gpu <- gpu_processes()
+  if (n_gpu == 0) {
+    return(max(1, cpu_quota %/% n_workers))
+  }
+  # this worker counts once, before and after its first CUDA context
+  own <- if (exists("on_gpu", envir = worker_cache)) 0 else 1
+  max(1, cpu_quota %/% (n_gpu + own))
+}
+set_threads <- function(n_threads, quiet = FALSE) {
+  if (quiet && torch::torch_get_num_threads() == n_threads) {
+    return(invisible(n_threads))
+  }
   torch::torch_set_num_threads(n_threads)
   message(glue("worker {Sys.getpid()}: torch threads {torch::torch_get_num_threads()}"))
 }
-n_threads <- max(1, cpu_cores() %/% n_workers)
+n_threads <- max(1, cpu_quota %/% n_workers)
 if (n_workers <= 1) {
   set_threads(n_threads)
   invisible(lapply(tasks, run_task))
@@ -310,7 +345,8 @@ if (n_workers <= 1) {
   parallel::clusterExport(cl, c(
     "results_dir", "stop_file", "samples_file", "read_samples", "base_stream",
     "round_stream", "fraction_stream", "split_file", "task_file",
-    "worker_cache", "cached", "run_task"
+    "worker_cache", "cached", "run_task", "cpu_quota", "n_workers",
+    "gpu_processes", "task_threads", "set_threads"
   ))
   invisible(parallel::parLapplyLB(cl, tasks, run_task))
   parallel::stopCluster(cl)
