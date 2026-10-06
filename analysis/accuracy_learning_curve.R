@@ -186,14 +186,6 @@ for (task in tasks[done]) {
   message(glue("round {task$ith_run} {task$method} fraction {task$frac}: done, skipped"))
 }
 tasks <- tasks[!done]
-# longest tasks first (TempCNN, then the larger fractions), so no worker
-# is left with a long task at the end
-method_cost <- c(ts_tempcnn = 3, ts_mlp = 2)
-task_cost <- purrr::map_dbl(tasks, function(task) {
-  cost <- method_cost[task$method]
-  (if (is.na(cost)) 1 else cost) * 10 + task$frac
-})
-tasks <- tasks[order(task_cost, decreasing = TRUE)]
 
 #
 # 5. Run one task: train, classify the validation samples, measure
