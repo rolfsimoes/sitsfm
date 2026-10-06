@@ -312,8 +312,6 @@ if (n_workers <= 1) {
     "round_stream", "fraction_stream", "split_file", "task_file",
     "worker_cache", "cached", "run_task"
   ))
-  # chunk.size = 1: one task at a time per worker; the default sends
-  # blocks of about 20 tasks and leaves some workers idle at the end
-  invisible(parallel::parLapplyLB(cl, tasks, run_task, chunk.size = 1))
+  invisible(parallel::parLapplyLB(cl, tasks, run_task))
   parallel::stopCluster(cl)
 }
