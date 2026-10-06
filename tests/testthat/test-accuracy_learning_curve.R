@@ -1,31 +1,45 @@
 # Runs analysis/accuracy_learning_curve.R on the MODIS samples of sits
 # (1218 samples, 4 classes), one round, MLP on the raw time series.
 # Oracle: per-class counts computed by hand with floor(), the rounding of
-# sits_sample(); set properties checked with base R.
+# sits_sample(); set properties checked with base R; results of one worker
+# compared with results of two.
 # It cannot see the encoders, the GPU or the run time of the real data.
 script <- normalizePath(testthat::test_path("..", "..", "analysis", "accuracy_learning_curve.R"))
-work <- tempfile("lc_")
-dir.create(work)
-saveRDS(sits::samples_modis_ndvi, file.path(work, "modis.rds"))
-run <- function(fractions = "0.1,0.5,1", dir = work) {
-    file.copy(file.path(work, "modis.rds"), dir)
-    withr::with_dir(dir, suppressWarnings(system2(
-        "Rscript", c(script, "1", fractions, "ts_mlp", "modis.rds"),
-        stdout = TRUE, stderr = TRUE
-    )))
+modis <- tempfile("modis_", fileext = ".rds")
+saveRDS(sits::samples_modis_ndvi, modis)
+new_dir <- function() {
+    d <- tempfile("lc_")
+    dir.create(file.path(d, "data", "results", "learning_curve"), recursive = TRUE)
+    d
 }
-log <- run()
-out <- file.path(work, "data", "results", "learning_curve")
+run <- function(dir, fractions = "0.1,0.5,1", methods = "ts_mlp", workers = "1", rounds = "1") {
+    old <- setwd(dir)
+    on.exit(setwd(old))
+    suppressWarnings(system2(
+        "Rscript", c(script, rounds, fractions, methods, modis, workers),
+        stdout = TRUE, stderr = TRUE
+    ))
+}
+results <- function(dir) file.path(dir, "data", "results", "learning_curve")
+task_file <- function(dir, method, frac, round = 1) {
+    file.path(results(dir), sprintf("round_%02d_%s_f%03d.csv", round, method, round(frac * 100)))
+}
+no_seconds <- function(file) {
+    d <- read.csv(file)
+    d[d$metric != "seconds", ]
+}
+work <- new_dir()
+log <- run(work)
 labels <- sits::samples_modis_ndvi[["label"]]
 count <- function(ids) as.vector(table(factor(labels[ids], levels = sort(unique(labels)))))
 
-test_that("the script ends and writes the split and the accuracy table", {
+test_that("the script ends and writes the split and one table per fraction", {
     expect_null(attr(log, "status"))
-    expect_true(file.exists(file.path(out, "round_01_split.rds")))
-    expect_true(file.exists(file.path(out, "round_01_ts_mlp.csv")))
+    expect_true(file.exists(file.path(results(work), "round_01_split.rds")))
+    for (f in c(0.1, 0.5, 1)) expect_true(file.exists(task_file(work, "ts_mlp", f)))
 })
 
-split <- readRDS(file.path(out, "round_01_split.rds"))
+split <- readRDS(file.path(results(work), "round_01_split.rds"))
 
 test_that("the split keeps floor(0.7 n) of each class for training", {
     # Cerrado 379, Forest 131, Pasture 344, Soy_Corn 364
@@ -43,62 +57,73 @@ test_that("fractions take floor(f n) of each class and are nested", {
     expect_length(setdiff(split$train[["0.5"]], split$train[["1"]]), 0)
 })
 
-test_that("the table holds accuracy, kappa and one F1 per class for each fraction", {
-    acc <- read.csv(file.path(out, "round_01_ts_mlp.csv"))
+test_that("each table holds accuracy, kappa and one F1 per class", {
     for (f in c(0.1, 0.5, 1)) {
-        a <- acc[acc$fraction == f, ]
+        a <- read.csv(task_file(work, "ts_mlp", f))
+        expect_equal(unique(a$fraction), f)
         expect_equal(sum(a$metric == "accuracy"), 1)
         expect_equal(sum(a$metric == "kappa"), 1)
         expect_setequal(a$class[a$metric == "f1"], sort(unique(labels)))
         # an MLP on 84 samples gets few gradient steps and can stay below
         # chance, so the test checks the range, not the quality
-        expect_true(all(a$value[a$metric == "accuracy"] >= 0 & a$value[a$metric == "accuracy"] <= 1))
+        acc <- a$value[a$metric == "accuracy"]
+        expect_true(acc >= 0 && acc <= 1)
         expect_equal(unique(a$n_valid), 368)
     }
 })
 
-test_that("a second run skips the round that is done", {
-    expect_true(any(grepl("done, skipped", run())))
+test_that("a second run skips every task that is done", {
+    log2 <- run(work)
+    expect_equal(sum(grepl("done, skipped", log2)), 3)
+    expect_false(any(grepl(": accuracy", log2)))
 })
 
-test_that("a fraction gives the same samples and accuracy without the other fractions", {
-    # streams per round and substreams per fraction: the result of (round,
-    # fraction) must not depend on which other fractions ran
-    work2 <- tempfile("lc_")
-    dir.create(work2)
-    log2 <- run("0.5,1", work2)
-    expect_null(attr(log2, "status"))
-    out2 <- file.path(work2, "data", "results", "learning_curve")
-    split2 <- readRDS(file.path(out2, "round_01_split.rds"))
+test_that("a fraction gives the same samples and result without the other fractions", {
+    work2 <- new_dir()
+    expect_null(attr(run(work2, "0.5,1"), "status"))
+    split2 <- readRDS(file.path(results(work2), "round_01_split.rds"))
     expect_identical(split2$valid, split$valid)
     expect_identical(split2$train[["0.5"]], split$train[["0.5"]])
-    keep <- function(d) d[d$fraction %in% c(0.5, 1) & d$metric != "seconds", ]
-    a1 <- keep(read.csv(file.path(out, "round_01_ts_mlp.csv")))
-    a2 <- keep(read.csv(file.path(out2, "round_01_ts_mlp.csv")))
-    rownames(a1) <- rownames(a2) <- NULL
-    expect_equal(a2, a1)
+    for (f in c(0.5, 1)) {
+        expect_equal(no_seconds(task_file(work2, "ts_mlp", f)), no_seconds(task_file(work, "ts_mlp", f)))
+    }
+})
+
+test_that("two workers give the same results as one", {
+    work3 <- new_dir()
+    expect_null(attr(run(work3, workers = "2"), "status"))
+    for (f in c(0.1, 0.5, 1)) {
+        expect_equal(no_seconds(task_file(work3, "ts_mlp", f)), no_seconds(task_file(work, "ts_mlp", f)))
+    }
+})
+
+test_that("a table of the first layout (one per round and method) is reused", {
+    # first layout: round_01_ts_mlp.csv with all fractions; a marker value
+    # shows the table was split, not recomputed
+    work4 <- new_dir()
+    first <- do.call(rbind, lapply(c(0.5, 1), function(f) read.csv(task_file(work, "ts_mlp", f))))
+    first$value[first$metric == "accuracy"] <- 0.123
+    write.csv(first, file.path(results(work4), "round_01_ts_mlp.csv"), row.names = FALSE)
+    log4 <- run(work4, "0.5,1")
+    expect_equal(sum(grepl("done, skipped", log4)), 2)
+    for (f in c(0.5, 1)) {
+        a <- read.csv(task_file(work4, "ts_mlp", f))
+        expect_equal(a$value[a$metric == "accuracy"], 0.123)
+    }
 })
 
 test_that("a fraction that is not a multiple of 0.01 is refused", {
-    work3 <- tempfile("lc_")
-    dir.create(work3)
-    expect_false(is.null(attr(run("0.125,1", work3), "status")))
+    expect_false(is.null(attr(run(new_dir(), "0.125,1"), "status")))
 })
 
-test_that("encoded samples are read from disk once per run, not per round", {
+test_that("encoded samples are read from disk once per worker, not per round", {
     # stand-in for an encoder: the MODIS samples saved as encoded_btwins.rds
-    work4 <- tempfile("lc_")
-    out4 <- file.path(work4, "data", "results", "learning_curve")
-    dir.create(out4, recursive = TRUE)
+    work5 <- new_dir()
     enc <- sits::samples_modis_ndvi
     enc[["id"]] <- seq_len(nrow(enc))
-    saveRDS(enc, file.path(out4, "encoded_btwins.rds"))
-    file.copy(file.path(work, "modis.rds"), work4)
-    log4 <- withr::with_dir(work4, suppressWarnings(system2(
-        "Rscript", c(script, "2", "0.5,1", "btwins", "modis.rds"),
-        stdout = TRUE, stderr = TRUE
-    )))
-    expect_null(attr(log4, "status"))
-    expect_equal(sum(grepl("encoded btwins: read from", log4)), 1)
-    expect_true(file.exists(file.path(out4, "round_02_btwins.csv")))
+    saveRDS(enc, file.path(results(work5), "encoded_btwins.rds"))
+    log5 <- run(work5, "0.5,1", "btwins", rounds = "2")
+    expect_null(attr(log5, "status"))
+    expect_equal(sum(grepl("encoded btwins: read from", log5)), 1)
+    expect_true(file.exists(task_file(work5, "btwins", 1, round = 2)))
 })

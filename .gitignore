@@ -68,3 +68,6 @@ data/encoders
 data/results
 data/cubes
 #
+
+# temporary files of the tests (TMPDIR)
+/tmp/
