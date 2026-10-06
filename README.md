@@ -67,8 +67,9 @@ Rscript analysis/accuracy_learning_curve.R 1 0.05,1 btwins,ts_tempcnn hf 4
 8. `summary_learning_curve.R`: reads the result files of step 7 and writes,
 in `data/results/learning_curve/summary`, the mean and standard deviation
 over rounds of each method and fraction (overall accuracy, kappa, macro F1,
-F1 per class), the paired differences of each method against the MLP and
-the TempCNN on the raw time series with their 95% interval, and two
+F1 per class), the paired differences of each method against the MLP on
+the raw time series with their 95% interval (the TempCNN is left out of
+the report), and two
 figures: the learning curve and the paired differences. It works on a run
 in progress; `n_rounds` says how many rounds each number uses.
 

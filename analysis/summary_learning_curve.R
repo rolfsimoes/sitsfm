@@ -1,8 +1,9 @@
 # Summary of the learning curve (analysis/accuracy_learning_curve.R):
 # mean and standard deviation over rounds of each method and fraction, paired
-# differences against the MLP and the TempCNN on the raw time series, and
-# two figures. Reads the task files in data/results/learning_curve and
-# writes to data/results/learning_curve/summary. Works on a run in progress:
+# differences against the MLP on the raw time series, and two figures. The
+# TempCNN is left out of the report (decided 2026-10-06). Reads the task
+# files in data/results/learning_curve and writes to
+# data/results/learning_curve/summary. Works on a run in progress:
 # n_rounds says how many rounds each number is computed on.
 #
 #   Rscript analysis/summary_learning_curve.R
@@ -16,13 +17,12 @@ method_names <- c(
   btwins = "Barlow Twins + MLP",
   vicreg = "VICReg + MLP",
   lejepa = "LeJEPA + MLP",
-  ts_mlp = "MLP, time series",
-  ts_tempcnn = "TempCNN, time series"
+  ts_mlp = "MLP, time series"
 )
-# fixed categorical order (dataviz reference palette, slots 1 to 5)
-method_colors <- c("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4")
+# fixed categorical order (dataviz reference palette, slots 1 to 4)
+method_colors <- c("#2a78d6", "#eb6834", "#1baf7a", "#eda100")
 names(method_colors) <- method_names
-method_shapes <- c(16, 17, 15, 18, 4)
+method_shapes <- c(16, 17, 15, 18)
 names(method_shapes) <- method_names
 
 #
@@ -30,6 +30,7 @@ names(method_shapes) <- method_names
 #
 task_files <- fs::dir_ls(results_dir, regexp = "round_[0-9]+_.*_f[0-9]{3}\\.csv$")
 results <- dplyr::bind_rows(purrr::map(task_files, read.csv))
+results <- dplyr::filter(results, .data[["method"]] %in% names(method_names))
 message(glue("{length(task_files)} task files, rounds {paste(sort(unique(results$round)), collapse = ', ')}"))
 
 overall <- dplyr::filter(results, .data[["metric"]] %in% c("accuracy", "kappa", "seconds"))
@@ -75,7 +76,7 @@ write.csv(summary_f1, fs::path(summary_dir, "summary_f1_class.csv"), row.names =
 #
 # 3. Paired differences: method minus baseline, inside each round
 #
-paired <- purrr::map_dfr(c("ts_mlp", "ts_tempcnn"), function(base) {
+paired <- purrr::map_dfr(c("ts_mlp"), function(base) {
   base_acc <- dplyr::select(
     dplyr::filter(overall, method == base),
     round, fraction, base_accuracy = accuracy
@@ -137,7 +138,7 @@ ggsave(fs::path(summary_dir, "learning_curve_accuracy.png"), curve, width = 7, h
 plot_diff <- dplyr::mutate(
   paired,
   method = factor(method_names[method], levels = method_names),
-  baseline = factor(paste("minus", method_names[baseline]), levels = paste("minus", method_names[c("ts_mlp", "ts_tempcnn")]))
+  baseline = factor(paste("minus", method_names[baseline]), levels = paste("minus", method_names["ts_mlp"]))
 )
 diff_plot <- ggplot(plot_diff, aes(fraction, diff_mean, colour = method, shape = method)) +
   geom_hline(yintercept = 0, colour = "grey50", linewidth = 0.4) +
