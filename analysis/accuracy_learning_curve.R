@@ -52,6 +52,12 @@ if (torch::cuda_is_available()) {
   batch_size <- 1000 * 1000
 }
 results_dir <- fs::dir_create("data/results/learning_curve")
+# a STOP file in results_dir makes the workers skip the tasks not started;
+# the tasks in progress end and write their files
+stop_file <- results_dir / "STOP"
+if (fs::file_exists(stop_file)) {
+  stop(glue("{stop_file} exists; remove it to run"))
+}
 
 #
 # 1. Load the samples
@@ -137,7 +143,8 @@ for (ith_run in seq_len(n_runs)) {
     dplyr::slice_head(dplyr::group_by(train_order, .data[["label"]]), prop = frac)[["id"]]
   })
   names(train_ids) <- as.character(fractions)
-  saveRDS(list(valid = validation_ids, train = train_ids), split_file(ith_run))
+  saveRDS(list(valid = validation_ids, train = train_ids), glue("{split_file(ith_run)}.tmp"))
+  fs::file_move(glue("{split_file(ith_run)}.tmp"), split_file(ith_run))
 }
 
 #
@@ -146,9 +153,14 @@ for (ith_run in seq_len(n_runs)) {
 task_file <- function(ith_run, method, frac) {
   results_dir / glue("round_{sprintf('%02d', ith_run)}_{method}_f{sprintf('%03d', round(frac * 100))}.csv")
 }
+# a truncated file is not done: the task runs again
 task_done <- function(file, frac) {
-  fs::file_exists(file) &&
-    any(read.csv(file)[["metric"]] == "accuracy" & read.csv(file)[["fraction"]] == frac)
+  if (!fs::file_exists(file)) {
+    return(FALSE)
+  }
+  result <- tryCatch(read.csv(file), error = function(e) NULL)
+  !is.null(result) &&
+    any(result[["metric"]] == "accuracy" & result[["fraction"]] == frac)
 }
 tasks <- expand.grid(
   frac = fractions, method = methods, ith_run = seq_len(n_runs),
@@ -174,6 +186,14 @@ for (task in tasks[done]) {
   message(glue("round {task$ith_run} {task$method} fraction {task$frac}: done, skipped"))
 }
 tasks <- tasks[!done]
+# longest tasks first (TempCNN, then the larger fractions), so no worker
+# is left with a long task at the end
+method_cost <- c(ts_tempcnn = 3, ts_mlp = 2)
+task_cost <- purrr::map_dbl(tasks, function(task) {
+  cost <- method_cost[task$method]
+  (if (is.na(cost)) 1 else cost) * 10 + task$frac
+})
+tasks <- tasks[order(task_cost, decreasing = TRUE)]
 
 #
 # 5. Run one task: train, classify the validation samples, measure
@@ -190,6 +210,10 @@ run_task <- function(task) {
   ith_run <- task$ith_run
   method <- task$method
   frac <- task$frac
+  if (fs::file_exists(stop_file)) {
+    message(glue("round {ith_run} {method} fraction {frac}: stop file, skipped"))
+    return(invisible(NULL))
+  }
   if (startsWith(method, "ts_")) {
     method_samples <- cached("samples", read_samples)
   } else {
@@ -292,10 +316,12 @@ if (n_workers <= 1) {
   })
   parallel::clusterCall(cl, set_threads, n_threads)
   parallel::clusterExport(cl, c(
-    "results_dir", "samples_file", "read_samples", "base_stream",
+    "results_dir", "stop_file", "samples_file", "read_samples", "base_stream",
     "round_stream", "fraction_stream", "split_file", "task_file",
     "worker_cache", "cached", "run_task"
   ))
-  invisible(parallel::parLapplyLB(cl, tasks, run_task))
+  # chunk.size = 1: one task at a time per worker; the default sends
+  # blocks of about 20 tasks and leaves some workers idle at the end
+  invisible(parallel::parLapplyLB(cl, tasks, run_task, chunk.size = 1))
   parallel::stopCluster(cl)
 }

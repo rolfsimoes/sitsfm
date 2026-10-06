@@ -52,7 +52,9 @@ nested fractions of the 70%. Each round, method and fraction is one task
 with its own CSV (`round_RR_METHOD_fFFF.csv` in
 `data/results/learning_curve`): overall accuracy, kappa, F1 per class and
 run time. A task whose CSV is complete is skipped, so a run can be resumed,
-and tasks run in parallel workers. Optional arguments are the number of
+and tasks run in parallel workers. To stop a run without losing the
+tasks in progress, create `data/results/learning_curve/STOP`: the workers
+skip the tasks not started; remove the file before the next run. Optional arguments are the number of
 rounds, the fractions, the methods, the samples (`hf`: the labelled
 samples on Hugging Face) and the number of workers; a stage run of one
 round, two fractions, one encoder and the TempCNN on the raw time series,
