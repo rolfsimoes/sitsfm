@@ -110,20 +110,24 @@ theme_curve <- theme_minimal(base_size = 11) +
   )
 
 plot_acc <- dplyr::mutate(summary_acc, method = factor(method_names[method], levels = method_names))
-curve <- ggplot(plot_acc, aes(n_train, accuracy_mean, colour = method, fill = method, shape = method)) +
+curve <- ggplot(plot_acc, aes(fraction, accuracy_mean, colour = method, fill = method, shape = method)) +
   geom_ribbon(
     aes(ymin = accuracy_mean - accuracy_sd, ymax = accuracy_mean + accuracy_sd),
     alpha = 0.15, colour = NA
   ) +
   geom_line(linewidth = 0.6) +
   geom_point(size = 2.2) +
-  scale_x_log10(labels = scales::label_comma()) +
+  # one tick per fraction of the run; log scale spreads the small fractions
+  scale_x_log10(
+    breaks = sort(unique(plot_acc$fraction)),
+    labels = scales::label_percent(accuracy = 1)
+  ) +
   scale_y_continuous(labels = scales::label_percent(accuracy = 1)) +
   scale_colour_manual(values = method_colors) +
   scale_fill_manual(values = method_colors) +
   scale_shape_manual(values = method_shapes) +
   labs(
-    x = "Training samples (log scale)",
+    x = "Fraction of the training samples (log scale)",
     y = "Overall accuracy",
     caption = "Mean over rounds; band: one standard deviation."
   ) +
