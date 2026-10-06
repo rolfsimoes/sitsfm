@@ -102,7 +102,10 @@ write.csv(paired, fs::path(summary_dir, "paired_differences.csv"), row.names = F
 #
 # 4. Figures
 #
-theme_curve <- theme_minimal(base_size = 11) +
+# slides: 16:9 at 13.33 x 7.5 inches, text readable when projected
+slide_width <- 13.33
+slide_height <- 7.5
+theme_curve <- theme_minimal(base_size = 20) +
   theme(
     legend.position = "top",
     legend.title = element_blank(),
@@ -116,8 +119,8 @@ curve <- ggplot(plot_acc, aes(fraction, accuracy_mean, colour = method, fill = m
     aes(ymin = accuracy_mean - accuracy_sd, ymax = accuracy_mean + accuracy_sd),
     alpha = 0.15, colour = NA
   ) +
-  geom_line(linewidth = 0.6) +
-  geom_point(size = 2.2) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3.5) +
   # one tick per fraction of the run; log scale spreads the small fractions
   scale_x_log10(
     breaks = sort(unique(plot_acc$fraction)),
@@ -133,29 +136,33 @@ curve <- ggplot(plot_acc, aes(fraction, accuracy_mean, colour = method, fill = m
     caption = "Mean over rounds; band: one standard deviation."
   ) +
   theme_curve
-ggsave(fs::path(summary_dir, "learning_curve_accuracy.png"), curve, width = 7, height = 4.5, dpi = 200)
+ggsave(fs::path(summary_dir, "learning_curve_accuracy.png"), curve,
+       width = slide_width, height = slide_height, dpi = 150)
 
 plot_diff <- dplyr::mutate(
   paired,
-  method = factor(method_names[method], levels = method_names),
-  baseline = factor(paste("minus", method_names[baseline]), levels = paste("minus", method_names["ts_mlp"]))
+  method = factor(method_names[method], levels = method_names)
 )
 diff_plot <- ggplot(plot_diff, aes(fraction, diff_mean, colour = method, shape = method)) +
   geom_hline(yintercept = 0, colour = "grey50", linewidth = 0.4) +
-  geom_errorbar(aes(ymin = ci_low, ymax = ci_high), width = 0, linewidth = 0.5,
-                position = position_dodge(width = 0.02)) +
-  geom_point(size = 2.2, position = position_dodge(width = 0.02)) +
-  facet_wrap(~baseline) +
-  scale_x_continuous(labels = scales::label_percent(accuracy = 1)) +
+  # dodge in log10 units, so the methods sit side by side at every fraction
+  geom_errorbar(aes(ymin = ci_low, ymax = ci_high), width = 0, linewidth = 1,
+                position = position_dodge(width = 0.06)) +
+  geom_point(size = 3.5, position = position_dodge(width = 0.06)) +
+  scale_x_log10(
+    breaks = sort(unique(plot_diff$fraction)),
+    labels = scales::label_percent(accuracy = 1)
+  ) +
   scale_y_continuous(labels = scales::label_number(accuracy = 0.1, scale = 100, suffix = " pp")) +
   scale_colour_manual(values = method_colors) +
   scale_shape_manual(values = method_shapes) +
   labs(
-    x = "Fraction of the training samples",
-    y = "Accuracy difference",
+    x = "Fraction of the training samples (log scale)",
+    y = "Accuracy minus MLP, time series",
     caption = "Paired by round; bars: 95% interval of the mean difference."
   ) +
   theme_curve
-ggsave(fs::path(summary_dir, "paired_differences.png"), diff_plot, width = 9, height = 4.5, dpi = 200)
+ggsave(fs::path(summary_dir, "paired_differences.png"), diff_plot,
+       width = slide_width, height = slide_height, dpi = 150)
 
 message(glue("summary written to {summary_dir}"))
