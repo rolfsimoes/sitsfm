@@ -45,7 +45,11 @@ same set of labelled samples used in step 5.
 7. `accuracy_learning_curve.R`: measures which method reaches a given
 accuracy with fewer training samples. It compares the LeJEPA, VICReg and
 Barlow Twins encoders, frozen, each with an MLP trained on its embeddings,
-against an MLP and a TempCNN trained on the raw time series. Each round
+against an MLP and a TempCNN trained on the raw time series. The method
+`ae_centre_y` trains the same MLP on AlphaEarth embeddings: the vector of
+the 10 m pixel that contains each sample, in the label year, read from the
+Hugging Face dataset named by `ae_repo` in the script. It is not in the
+default methods, so it runs only when named. Each round
 draws a new split of the labelled samples, 30% of each class for
 validation and 70% for training, and trains every method on the same
 nested fractions of the 70%. Each round, method and fraction is one task

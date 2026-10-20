@@ -1,5 +1,6 @@
-# Paired learning curve: accuracy of encoders + MLP and of MLP and TempCNN
-# on the raw time series, by fraction of the training samples.
+# Paired learning curve: accuracy of encoders + MLP, of AlphaEarth
+# embeddings + MLP and of MLP and TempCNN on the raw time series, by
+# fraction of the training samples.
 # Each round draws a new split of the labelled samples (70% train, 30%
 # validation); all methods of a round use the same split and the same
 # nested fractions.
@@ -11,6 +12,7 @@
 # Optional arguments: rounds, fractions, methods, samples file ("hf": the
 # labelled samples on Hugging Face), workers, e.g.
 #   Rscript analysis/accuracy_learning_curve.R 1 0.05,1 btwins,ts_tempcnn hf 2
+# The AlphaEarth methods (ae_*) are not in the default methods; name them.
 library(sits)
 library(glue)
 
@@ -87,32 +89,56 @@ labelled_samples <- read_samples()
 # 2. Encode all samples once per encoder; the encoder is frozen,
 #    so each round takes the rows it needs
 #
+# AlphaEarth methods: embeddings at the sample points, one file per image
+# year, rows in the order of the labelled samples
+ae_repo <- "rolfsimoes/samples_cerrado_aef"
+ae_files <- list(
+  ae_centre_y = "alphaearth_labelled_centre_y.parquet"
+)
+alphaearth_samples <- function(method) {
+  files <- ae_files[[method]]
+  # the Y - 1 and Y methods will list two files and join their bands
+  stopifnot(length(files) == 1)
+  samples <- sits_from_hf(repo = ae_repo, file = files, type = "dataset")
+  # same points in the same order, so the row number is the id
+  stopifnot(
+    nrow(samples) == nrow(labelled_samples),
+    all(samples[["longitude"]] == labelled_samples[["longitude"]]),
+    all(samples[["latitude"]] == labelled_samples[["latitude"]])
+  )
+  samples
+}
 encode_samples <- function(model) {
   enc_file <- results_dir / glue("encoded_{model}.rds")
   if (fs::file_exists(enc_file)) {
     return(invisible(enc_file))
   }
-  model_file <- glue("data/embeddings/embeddings/{model}/encoder/{model}.rds")
-  if (!fs::file_exists(model_file)) {
-    fs::dir_create(fs::path_dir(model_file))
-    encoder <- sits_from_hf(
-      repo = "e-sensing/encoders_cerrado",
-      file = glue("ssl_{model}_tcnn_model_2017_2024.rds"),
-      type = "model"
+  if (model %in% names(ae_files)) {
+    samples_enc <- alphaearth_samples(model)
+  } else {
+    model_file <- glue("data/embeddings/embeddings/{model}/encoder/{model}.rds")
+    if (!fs::file_exists(model_file)) {
+      fs::dir_create(fs::path_dir(model_file))
+      encoder <- sits_from_hf(
+        repo = "e-sensing/encoders_cerrado",
+        file = glue("ssl_{model}_tcnn_model_2017_2024.rds"),
+        type = "model"
+      )
+      saveRDS(encoder, model_file)
+    }
+    samples_enc <- sits_encode(
+      data = labelled_samples,
+      encoder = readRDS(model_file),
+      multicores = 20,
+      gpu_memory = 80,
+      batch_size = batch_size
     )
-    saveRDS(encoder, model_file)
   }
-  samples_enc <- sits_encode(
-    data = labelled_samples,
-    encoder = readRDS(model_file),
-    multicores = 20,
-    gpu_memory = 80,
-    batch_size = batch_size
-  )
-  # the rows must match the samples, or the ids point to other samples
+  # the rows must match the samples, or the ids point to other samples;
+  # unname: the saved samples have empty names on the labels
   stopifnot(
     nrow(samples_enc) == nrow(labelled_samples),
-    identical(samples_enc[["label"]], labelled_samples[["label"]])
+    identical(unname(samples_enc[["label"]]), unname(labelled_samples[["label"]]))
   )
   samples_enc[["id"]] <- labelled_samples[["id"]]
   saveRDS(samples_enc, glue("{enc_file}.tmp"))
