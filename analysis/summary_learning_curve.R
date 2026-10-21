@@ -1,8 +1,7 @@
 # Summary of the learning curve (analysis/accuracy_learning_curve.R):
 # mean and standard deviation over rounds of each method and fraction, paired
-# differences against the MLP on the raw time series, and two figures. The
-# TempCNN is left out of the report (decided 2026-10-06). Reads the task
-# files in data/results/learning_curve and writes to
+# differences against the MLP on the raw time series, and two figures.
+# Reads the task files in data/results/learning_curve and writes to
 # data/results/learning_curve/summary. Works on a run in progress:
 # n_rounds says how many rounds each number is computed on.
 #
@@ -18,12 +17,13 @@ method_names <- c(
   vicreg = "VICReg + MLP",
   lejepa = "LeJEPA + MLP",
   ts_mlp = "MLP, time series",
-  ae_centre_y = "AlphaEarth centre Y + MLP"
+  ae_centre_y = "AlphaEarth centre Y + MLP",
+  ts_tempcnn = "TempCNN, time series"
 )
-# fixed categorical order (dataviz reference palette, slots 1 to 5)
-method_colors <- c("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4")
+# fixed categorical order (dataviz reference palette, slots 1 to 6)
+method_colors <- c("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#8a5cd6")
 names(method_colors) <- method_names
-method_shapes <- c(16, 17, 15, 18, 4)
+method_shapes <- c(16, 17, 15, 18, 4, 8)
 names(method_shapes) <- method_names
 
 #
