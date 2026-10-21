@@ -3,14 +3,14 @@
 # fraction of the training samples.
 # Each round draws a new split of the labelled samples (70% train, 30%
 # validation); all methods of a round use the same split and the same
-# nested fractions.
+# nested fractions. A split saved by an earlier run is read, not drawn again.
 #
 # Each (round, method, fraction) is one task with its own result file
 # (round_RR_METHOD_fFFF.csv); a task whose file is done is skipped, and
 # tasks run in parallel workers.
 #
 # Optional arguments: rounds, fractions, methods, samples file ("hf": the
-# labelled samples on Hugging Face), workers, e.g.
+# labelled samples on Hugging Face), workers, results folder, e.g.
 #   Rscript analysis/accuracy_learning_curve.R 1 0.05,1 btwins,ts_tempcnn hf 2
 # The AlphaEarth methods (ae_*) are not in the default methods; name them.
 library(sits)
@@ -22,11 +22,13 @@ fractions <- c(0.05, 0.1, 0.15, 0.20, 0.25, 0.5, 0.75, 1.0)
 methods <- c("btwins", "vicreg", "lejepa", "ts_mlp", "ts_tempcnn")
 samples_file <- "hf"
 n_workers <- 1
+results_folder <- "data/results/learning_curve"
 if (length(args) >= 1) n_runs <- as.integer(args[[1]])
 if (length(args) >= 2) fractions <- as.numeric(strsplit(args[[2]], ",")[[1]])
 if (length(args) >= 3) methods <- strsplit(args[[3]], ",")[[1]]
 if (length(args) >= 4) samples_file <- args[[4]]
 if (length(args) >= 5) n_workers <- as.integer(args[[5]])
+if (length(args) >= 6) results_folder <- args[[6]]
 # each fraction has its own random substream, numbered 100 * fraction
 stopifnot(abs(fractions * 100 - round(fractions * 100)) < 1e-9)
 
@@ -53,7 +55,7 @@ batch_size <- NULL
 if (torch::cuda_is_available()) {
   batch_size <- 1000 * 1000
 }
-results_dir <- fs::dir_create("data/results/learning_curve")
+results_dir <- fs::dir_create(results_folder)
 # a STOP file in results_dir makes the workers skip the tasks not started;
 # the tasks in progress end and write their files
 stop_file <- results_dir / "STOP"
@@ -156,6 +158,10 @@ split_file <- function(ith_run) {
   results_dir / glue("round_{sprintf('%02d', ith_run)}_split.rds")
 }
 for (ith_run in seq_len(n_runs)) {
+  # recorded tasks used this split; drawing it again could change it
+  if (fs::file_exists(split_file(ith_run))) {
+    next
+  }
   assign(".Random.seed", round_stream(ith_run), envir = globalenv())
   # oversample = FALSE: the default TRUE draws with replacement
   train_samples <- sits_sample(labelled_samples, frac = 0.7, oversample = FALSE)
@@ -212,6 +218,14 @@ for (task in tasks[done]) {
   message(glue("round {task$ith_run} {task$method} fraction {task$frac}: done, skipped"))
 }
 tasks <- tasks[!done]
+# a split read from disk holds only the fractions of the run that drew it
+for (ith_run in unique(purrr::map_int(tasks, "ith_run"))) {
+  run_fracs <- purrr::map_dbl(purrr::keep(tasks, function(task) task$ith_run == ith_run), "frac")
+  missing <- setdiff(as.character(run_fracs), names(readRDS(split_file(ith_run))$train))
+  if (length(missing) > 0) {
+    stop(glue("{split_file(ith_run)} has no fraction {toString(missing)}; remove it to draw it again"))
+  }
+}
 
 #
 # 5. Run one task: train, classify the validation samples, measure
@@ -263,10 +277,13 @@ run_task <- function(task) {
       batch_size = 128
     )
   }
-  # threads of this training: the CPU quota shared with the processes
-  # training on the GPU now, other runs included
-  set_threads(task_threads(), quiet = TRUE)
-  ml_model <- sits_train(samples = samples_red, ml_method = ml_method)
+  # threads of this task: the CPU quota shared with the processes training
+  # on the GPU now, other runs included
+  threads <- task_threads()
+  # sits_train() sets its threads only during the training (whole quota
+  # by default); the classification runs on the CPU with the worker's
+  set_threads(threads, quiet = TRUE)
+  ml_model <- sits_train(samples = samples_red, ml_method = ml_method, threads = threads)
   if (torch::cuda_is_available()) {
     assign("on_gpu", TRUE, envir = worker_cache)
   }
@@ -285,7 +302,8 @@ run_task <- function(task) {
   acc <- sits_accuracy(class_pts)
   message(glue(
     "round {ith_run} {method} fraction {frac}: ",
-    "accuracy {round(acc$overall[['Accuracy']], 4)}, {round(seconds)} s"
+    "accuracy {round(acc$overall[['Accuracy']], 4)}, {round(seconds)} s, ",
+    "{threads} threads, worker {Sys.getpid()}"
   ))
   result <- data.frame(
     round = ith_run,

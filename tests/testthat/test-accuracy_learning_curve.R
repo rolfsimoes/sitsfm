@@ -2,8 +2,11 @@
 # (1218 samples, 4 classes), one round, MLP on the raw time series.
 # Oracle: per-class counts computed by hand with floor(), the rounding of
 # sits_sample(); set properties checked with base R; results of one worker
-# compared with results of two.
+# compared with results of two; torch threads inside the training traced
+# in torch_manual_seed(), which sits calls once per training.
 # It cannot see the encoders, the GPU or the run time of the real data.
+# Without a GPU every task gets the same threads; the share among the
+# processes on a GPU (nvidia-smi) is checked only as training = task value.
 script <- normalizePath(testthat::test_path("..", "..", "analysis", "accuracy_learning_curve.R"))
 modis <- tempfile("modis_", fileext = ".rds")
 saveRDS(sits::samples_modis_ndvi, modis)
@@ -12,13 +15,40 @@ new_dir <- function() {
     dir.create(file.path(d, "data", "results", "learning_curve"), recursive = TRUE)
     d
 }
-run <- function(dir, fractions = "0.1,0.5,1", methods = "ts_mlp", workers = "1", rounds = "1") {
+run <- function(dir, fractions = "0.1,0.5,1", methods = "ts_mlp", workers = "1", rounds = "1",
+                folder = NULL, env = character()) {
     old <- setwd(dir)
     on.exit(setwd(old))
     suppressWarnings(system2(
-        "Rscript", c(script, rounds, fractions, methods, modis, workers),
-        stdout = TRUE, stderr = TRUE
+        "Rscript", c(script, rounds, fractions, methods, modis, workers, folder),
+        stdout = TRUE, stderr = TRUE, env = env
     ))
+}
+# profile of the child R processes, workers included: each training logs
+# the torch threads it runs with
+trace_profile <- tempfile("trace_", fileext = ".R")
+writeLines(c(
+    'if (file.exists("~/.Rprofile")) source("~/.Rprofile")',
+    'setHook(packageEvent("torch", "onLoad"), function(...) suppressMessages(trace(',
+    '    "torch_manual_seed", where = asNamespace("torch"), print = FALSE,',
+    '    tracer = quote(message("worker ", Sys.getpid(), ": training threads ",',
+    '        torch::torch_get_num_threads())))))'
+), trace_profile)
+# threads per worker pid, in log order, from lines that end in
+# "<n> threads, worker <pid>" or "worker <pid>: training threads <n>"
+threads_by_worker <- function(log, training) {
+    if (training) {
+        m <- regmatches(log, regexec("^worker ([0-9]+): training threads ([0-9]+)$", log))
+        m <- m[lengths(m) == 3]
+        pid <- vapply(m, `[[`, "", 2)
+        n <- vapply(m, `[[`, "", 3)
+    } else {
+        m <- regmatches(log, regexec(": accuracy .*, ([0-9]+) threads, worker ([0-9]+)$", log))
+        m <- m[lengths(m) == 3]
+        pid <- vapply(m, `[[`, "", 3)
+        n <- vapply(m, `[[`, "", 2)
+    }
+    lapply(split(as.integer(n), pid), unname)
 }
 # the last lines of a run's log, shown when the run fails
 tail_of <- function(log) paste(utils::tail(log, 30), collapse = "\n")
@@ -94,16 +124,24 @@ test_that("a fraction gives the same samples and result without the other fracti
 
 test_that("two workers give the same results as one", {
     work3 <- new_dir()
-    log3 <- run(work3, workers = "2")
+    log3 <- run(work3, workers = "2", env = paste0("R_PROFILE_USER=", trace_profile))
     expect_null(attr(log3, "status"), info = tail_of(log3))
-    # each worker gets half of the CPU quota of the container as torch threads
     q <- if (file.exists("/sys/fs/cgroup/cpu.max")) {
         strsplit(readLines("/sys/fs/cgroup/cpu.max", n = 1), " ")[[1]]
     } else {
         "max"
     }
     cores <- if (q[[1]] == "max") parallel::detectCores() else as.numeric(q[[1]]) %/% as.numeric(q[[2]])
-    expect_equal(sum(grepl(paste0("torch threads ", max(1, cores %/% 2), "$"), log3)), 2)
+    # each training runs with the threads its task chose, not the
+    # whole quota that sits_train() takes by default
+    task <- threads_by_worker(log3, training = FALSE)
+    expect_equal(sum(lengths(task)), 3)
+    expect_identical(threads_by_worker(log3, training = TRUE), task)
+    if (!torch::cuda_is_available()) {
+        # without a GPU each worker gets half of the CPU quota of the container
+        expect_equal(sum(grepl(paste0("torch threads ", max(1, cores %/% 2), "$"), log3)), 2)
+        expect_true(all(unlist(task) == max(1, cores %/% 2)))
+    }
     for (f in c(0.1, 0.5, 1)) {
         expect_equal(no_seconds(task_file(work3, "ts_mlp", f)), no_seconds(task_file(work, "ts_mlp", f)))
     }
@@ -138,4 +176,52 @@ test_that("encoded samples are read from disk once per worker, not per round", {
     expect_null(attr(log5, "status"), info = tail_of(log5))
     expect_equal(sum(grepl("encoded btwins: read from", log5)), 1)
     expect_true(file.exists(task_file(work5, "btwins", 1, round = 2)))
+})
+
+test_that("a saved split is read, not drawn again, and not rewritten", {
+    # marker split: every other training sample at fraction 1, 425 of 850,
+    # a size no draw gives (a draw keeps floor(0.7 n) of each class)
+    work6 <- new_dir()
+    marker <- list(valid = split$valid, train = list("1" = split$train[["1"]][c(TRUE, FALSE)]))
+    file <- file.path(results(work6), "round_01_split.rds")
+    saveRDS(marker, file)
+    before <- tools::md5sum(file)
+    log6 <- run(work6, "1")
+    expect_null(attr(log6, "status"), info = tail_of(log6))
+    expect_equal(unname(tools::md5sum(file)), unname(before))
+    a <- read.csv(task_file(work6, "ts_mlp", 1))
+    expect_equal(unique(a$n_train), 425)
+    expect_equal(unique(a$n_valid), 368)
+})
+
+test_that("a saved split without a fraction asked for stops the run", {
+    work7 <- new_dir()
+    file <- file.path(results(work7), "round_01_split.rds")
+    saveRDS(list(valid = split$valid, train = list("1" = split$train[["1"]])), file)
+    before <- tools::md5sum(file)
+    log7 <- run(work7, "0.5,1")
+    expect_false(is.null(attr(log7, "status")))
+    expect_true(any(grepl("has no fraction 0.5", log7)))
+    expect_equal(unname(tools::md5sum(file)), unname(before))
+    expect_false(file.exists(task_file(work7, "ts_mlp", 1)))
+})
+
+test_that("the results folder argument moves every file the script reads and writes", {
+    work8 <- new_dir()
+    folder <- file.path(work8, "elsewhere")
+    dir.create(folder)
+    # the encoded samples and a STOP file are read from the given folder
+    enc <- sits::samples_modis_ndvi
+    enc[["id"]] <- seq_len(nrow(enc))
+    saveRDS(enc, file.path(folder, "encoded_btwins.rds"))
+    file.create(file.path(folder, "STOP"))
+    expect_false(is.null(attr(run(work8, "1", "btwins", folder = folder), "status")))
+    file.remove(file.path(folder, "STOP"))
+    log8 <- run(work8, "1", "btwins", folder = folder)
+    expect_null(attr(log8, "status"), info = tail_of(log8))
+    expect_equal(sum(grepl("encoded btwins: read from", log8)), 1)
+    expect_true(file.exists(file.path(folder, "round_01_split.rds")))
+    expect_true(file.exists(file.path(folder, "round_01_btwins_f100.csv")))
+    # the default folder stays empty
+    expect_length(list.files(results(work8), all.files = TRUE, no.. = TRUE), 0)
 })

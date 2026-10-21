@@ -52,7 +52,9 @@ Hugging Face dataset named by `ae_repo` in the script. It is not in the
 default methods, so it runs only when named. Each round
 draws a new split of the labelled samples, 30% of each class for
 validation and 70% for training, and trains every method on the same
-nested fractions of the 70%. Each round, method and fraction is one task
+nested fractions of the 70%. The split of each round is saved
+(`round_RR_split.rds`); a later run reads it and does not draw it again,
+and stops if it lacks a fraction asked for. Each round, method and fraction is one task
 with its own CSV (`round_RR_METHOD_fFFF.csv` in
 `data/results/learning_curve`): overall accuracy, kappa, F1 per class and
 run time. A task whose CSV is complete is skipped, so a run can be resumed,
@@ -60,7 +62,11 @@ and tasks run in parallel workers. To stop a run without losing the
 tasks in progress, create `data/results/learning_curve/STOP`: the workers
 skip the tasks not started; remove the file before the next run. Optional arguments are the number of
 rounds, the fractions, the methods, the samples (`hf`: the labelled
-samples on Hugging Face) and the number of workers; a stage run of one
+samples on Hugging Face), the number of workers and the results folder
+(default `data/results/learning_curve`; the samples, splits, encoded
+samples, task CSVs and STOP file are all read and written there). Each
+task trains with its share of the CPU quota as torch threads, divided
+among the processes on the GPU. A stage run of one
 round, two fractions, one encoder and the TempCNN on the raw time series,
 in 4 workers:
 
@@ -81,11 +87,28 @@ in progress; `n_rounds` says how many rounds each number uses.
 Rscript analysis/summary_learning_curve.R
 ```
 
+9. `check_learning_curve.R`: reruns 16 recorded tasks of step 7 (rounds
+1 and 2, fractions 5% and 10%, the three encoders and the MLP on the raw
+time series, 8 workers) in `data/results/learning_curve_check`, which
+links the labelled samples, splits and encoded samples of
+`data/results/learning_curve`. It writes the log of the run
+(`check.log`) and `comparison.csv` there (accuracy and seconds, recorded
+and new) and prints the number of tasks compared, the largest accuracy
+difference and the median time ratio; it exits with status 1 if a task
+is missing. It writes nothing in `data/results/learning_curve` and
+refuses to run while results of an earlier check are in its folder.
+
+```
+Rscript analysis/check_learning_curve.R
+```
+
 ## Tests
 
 The test runs the learning curve on the MODIS samples of `sits` and checks
 the split, the nested fractions, the result tables, the skip of finished
-tasks and that two workers give the results of one. From the repository
+tasks, that two workers give the results of one and train with the torch
+threads of their task, that a saved split is read and not rewritten, and
+that the results folder argument moves every file. From the repository
 root, with temporary files in `tmp/`:
 
 ```
