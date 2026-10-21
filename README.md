@@ -97,10 +97,32 @@ and new) and prints the number of tasks compared, the largest accuracy
 difference and the median time ratio; it exits with status 1 if a task
 is missing. It writes nothing in `data/results/learning_curve` and
 refuses to run while results of an earlier check are in its folder.
+Optional arguments are the number of rounds, the fractions, the methods
+and the check folder; the second line reruns the two recorded TempCNN
+tasks of round 1 at 5% and 10%:
 
 ```
 Rscript analysis/check_learning_curve.R
+Rscript analysis/check_learning_curve.R 1 0.05,0.1 ts_tempcnn data/results/learning_curve_check_tempcnn
 ```
+
+## Server tools
+
+`server/` holds tools for the server where the learning curve runs; they
+are not part of the package. `server/memstat.sh` runs next to a
+learning-curve run: every 5 s it samples RAM (`anon` of the cgroup), GPU
+memory and use, CPU cores and read rate of the run's processes, and
+appends the min, max and mean of each 5 min window, with the count of
+finished tasks, as one line to a log. It exits when the run ends. Start it
+detached from the repository root, after the run:
+
+```
+setsid nohup server/memstat.sh --tasks data/results/learning_curve \
+  'ts_tempcnn_f[0-9]{3}[.]csv$' data/results/learning_curve/memstat.log \
+  > /dev/null 2>&1 < /dev/null &
+```
+
+`server/memstat.sh --help` lists the options.
 
 ## Tests
 

@@ -1,0 +1,122 @@
+#!/bin/bash
+# memstat.sh -- run on the server next to a learning-curve run: sample RAM,
+# GPU, CPU and read rate of the run's processes every STEP seconds and
+# append the min, max and mean of each WINDOW as one line to LOG.
+#
+# RAM is `anon` of the cgroup memory.stat: memory.current also counts page
+# cache, which the kernel reclaims before it kills a process. CPU and read
+# rate come from /proc/<pid>/stat and /proc/<pid>/io over the process tree
+# of the run (the main R process and its PSOCK workers). Exits when the run
+# is gone. Reads only /proc, memory.stat, nvidia-smi and the results
+# folder; writes only LOG.
+#
+# Usage: server/memstat.sh [options] LOG
+#   --pattern P   pgrep -f pattern of the run's main process
+#                 (default '[-]-file=analysis/accuracy_learning_curve')
+#   --tasks DIR G count the files of DIR matching grep -E G (finished tasks)
+#   --step S      seconds between samples (default 5)
+#   --window W    seconds per line (default 300)
+#   -h, --help    this help
+#   --version     the version
+#
+# Start it detached, from the repository root, for example:
+#   setsid nohup server/memstat.sh --tasks data/results/learning_curve \
+#     'ae_centre_y_f[0-9]{3}[.]csv$' data/results/learning_curve/memstat.log \
+#     > /dev/null 2>&1 < /dev/null &
+set -uo pipefail
+
+VERSION=0.1.0
+PATTERN='[-]-file=analysis/accuracy_learning_curve'
+TASK_DIR=
+TASK_RE=
+STEP=5
+WINDOW=300
+LOG=
+while [ $# -gt 0 ]; do
+    case $1 in
+        -h|--help) sed -n '2,/^set /p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
+        --version) echo "memstat.sh $VERSION"; exit 0 ;;
+        --pattern) PATTERN=$2; shift 2 ;;
+        --tasks) TASK_DIR=$2; TASK_RE=$3; shift 3 ;;
+        --step) STEP=$2; shift 2 ;;
+        --window) WINDOW=$2; shift 2 ;;
+        -?*) echo "memstat.sh: unknown option $1" >&2; exit 2 ;;
+        *) [ -z "$LOG" ] || { echo "memstat.sh: one LOG only" >&2; exit 2; }
+           LOG=$1; shift ;;
+    esac
+done
+[ -n "$LOG" ] || { echo "usage: memstat.sh [options] LOG" >&2; exit 2; }
+STAT=${MEMSTAT_CGROUP_STAT:-/sys/fs/cgroup/memory.stat}
+SAMPLES="$LOG.samples"
+TCK=$(getconf CLK_TCK)
+
+root() { pgrep -o -f "$PATTERN"; }
+# the PSOCK workers are children of the main process, so the tree covers them
+tree_pids() {
+    ps -eo pid=,ppid= | awk -v root="$1" '
+        { kids[$2] = kids[$2] " " $1 }
+        END { q[1] = root; n = 1
+              for (i = 1; i <= n; i++) { print q[i]; m = split(kids[q[i]], k, " ")
+                                         for (j = 1; j <= m; j++) q[++n] = k[j] } }'
+}
+
+# Sets DELTA_READ (bytes) and DELTA_CPU (clock ticks) since the previous
+# call over the tree; called without $( ), so that `seen` survives. A pid
+# first seen counts in full; on the first call nothing counts.
+declare -A seen_r=() seen_c=()
+first=1
+deltas() {
+    local pid r c
+    declare -A cur_r=() cur_c=()
+    DELTA_READ=0; DELTA_CPU=0
+    for pid in $(tree_pids "$1"); do
+        r=$(awk '$1 == "rchar:" {print $2}' "/proc/$pid/io" 2>/dev/null) || continue
+        c=$(awk '{print $14 + $15}' "/proc/$pid/stat" 2>/dev/null) || continue
+        [ -n "$r" ] && [ -n "$c" ] || continue
+        cur_r[$pid]=$r; cur_c[$pid]=$c
+        if [ "$first" = 0 ]; then
+            DELTA_READ=$(( DELTA_READ + r - ${seen_r[$pid]:-0} ))
+            DELTA_CPU=$(( DELTA_CPU + c - ${seen_c[$pid]:-0} ))
+        fi
+    done
+    seen_r=(); seen_c=()
+    for pid in "${!cur_r[@]}"; do seen_r[$pid]=${cur_r[$pid]}; seen_c[$pid]=${cur_c[$pid]}; done
+    first=0
+}
+tasks() {
+    [ -n "$TASK_DIR" ] || { echo NA; return; }
+    ls "$TASK_DIR" 2>/dev/null | grep -cE "$TASK_RE"
+}
+
+main=$(root) || { echo "memstat.sh: no process matches $PATTERN" >&2; exit 1; }
+[ -s "$LOG" ] || echo "time samples tasks ram_gb(min max mean) gpu_mem_gb(min max mean) gpu_util_pct(min max mean) read_mb_s(min max mean) cpu_cores(min max mean)" > "$LOG"
+: > "$SAMPLES"
+start=$(date +%s)
+deltas "$main"
+prev=$(date +%s.%N)
+while kill -0 "$main" 2>/dev/null; do
+    sleep "$STEP"
+    deltas "$main"
+    now=$(date +%s.%N)
+    dt=$(awk -v a="$now" -v p="$prev" 'BEGIN {print a - p}')
+    prev=$now
+    # columns: RAM GB, GPU memory GB, GPU utilization %, read MB/s, CPU cores
+    ram=$(awk '$1 == "anon" {printf "%.1f", $2 / 1e9}' "$STAT")
+    gpu=$(nvidia-smi --query-gpu=memory.used,utilization.gpu --format=csv,noheader,nounits 2>/dev/null |
+        awk -F', *' 'NR == 1 {printf "%.1f %d", $1 * 1048576 / 1e9, $2}')
+    rate=$(awk -v b="$DELTA_READ" -v t="$dt" 'BEGIN {printf "%.1f", b / 1e6 / t}')
+    cores=$(awk -v c="$DELTA_CPU" -v k="$TCK" -v t="$dt" 'BEGIN {printf "%.1f", c / k / t}')
+    echo "${ram:-NA} ${gpu:-NA NA} $rate $cores" >> "$SAMPLES"
+    if [ $(( $(date +%s) - start )) -ge "$WINDOW" ] || ! kill -0 "$main" 2>/dev/null; then
+        awk -v t="$(date -u '+%Y-%m-%dT%H:%M:%S')" -v d="$(tasks)" '
+            function upd(i, v) { if (v == "NA") return; n[i]++; s[i] += v
+                if (n[i] == 1 || v < lo[i]) lo[i] = v; if (n[i] == 1 || v > hi[i]) hi[i] = v }
+            function cell(i) { if (n[i]) return sprintf(" %.1f %.1f %.1f", lo[i], hi[i], s[i] / n[i])
+                               return " NA NA NA" }
+            { upd(1, $1); upd(2, $2); upd(3, $3); upd(4, $4); upd(5, $5) }
+            END { print t " " NR " " d cell(1) cell(2) cell(3) cell(4) cell(5) }' "$SAMPLES" >> "$LOG"
+        : > "$SAMPLES"
+        start=$(date +%s)
+    fi
+done
+rm -f "$SAMPLES"

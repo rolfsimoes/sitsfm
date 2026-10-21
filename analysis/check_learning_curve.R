@@ -1,14 +1,17 @@
-# Server check of accuracy_learning_curve.R: reruns 16 recorded tasks
-# (rounds 1 and 2, fractions 5% and 10%, the three encoders and the MLP on
-# the raw time series, 8 workers) in a separate folder and compares each
-# result with the recorded one.
+# Server check of accuracy_learning_curve.R: reruns recorded tasks (by
+# default 16: rounds 1 and 2, fractions 5% and 10%, the three encoders and
+# the MLP on the raw time series, 8 workers) in a separate folder and
+# compares each result with the recorded one.
 #
 # The check folder links (does not copy) the labelled samples, the splits
 # and the encoded samples of the recorded run, so the rerun uses the same
 # inputs; nothing is written in the recorded folder.
 #
-# Run from the repository root:
+# Run from the repository root. Optional arguments are the number of
+# rounds, the fractions, the methods and the check folder:
 #   Rscript analysis/check_learning_curve.R
+#   Rscript analysis/check_learning_curve.R 1 0.05,0.1 ts_tempcnn \
+#     data/results/learning_curve_check_tempcnn
 library(glue)
 
 recorded_dir <- fs::path("data/results/learning_curve")
@@ -18,6 +21,11 @@ n_rounds <- 2
 fractions <- c(0.05, 0.1)
 methods <- c("btwins", "vicreg", "lejepa", "ts_mlp")
 n_workers <- 8
+args <- commandArgs(trailingOnly = TRUE)
+if (length(args) >= 1) n_rounds <- as.integer(args[[1]])
+if (length(args) >= 2) fractions <- as.numeric(strsplit(args[[2]], ",")[[1]])
+if (length(args) >= 3) methods <- strsplit(args[[3]], ",")[[1]]
+if (length(args) >= 4) check_dir <- fs::path(args[[4]])
 
 task_name <- function(ith_run, method, frac) {
   glue("round_{sprintf('%02d', ith_run)}_{method}_f{sprintf('%03d', round(frac * 100))}.csv")
@@ -42,7 +50,7 @@ if (length(old) > 0) {
 inputs <- c(
   "labelled_samples.rds",
   sprintf("round_%02d_split.rds", seq_len(n_rounds)),
-  glue("encoded_{setdiff(methods, 'ts_mlp')}.rds")
+  glue("encoded_{setdiff(methods, c('ts_mlp', 'ts_tempcnn'))}.rds")
 )
 for (input in inputs) {
   target <- fs::path_abs(recorded_dir / input)
