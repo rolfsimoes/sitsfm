@@ -5,9 +5,10 @@
 #
 # RAM is `anon` of the cgroup memory.stat: memory.current also counts page
 # cache, which the kernel reclaims before it kills a process. CPU and read
-# rate come from /proc/<pid>/stat and /proc/<pid>/io over the process tree
-# of the run (the main R process and its PSOCK workers). Exits when the run
-# is gone. Reads only /proc, memory.stat, nvidia-smi and the results
+# rate come from /proc/<pid>/stat and /proc/<pid>/io over the processes
+# of the run's session (the main R process and its PSOCK workers), so
+# start the run and this script each with its own setsid. Exits when the
+# run is gone. Reads only /proc, memory.stat, nvidia-smi and the results
 # folder; writes only LOG.
 #
 # Usage: server/memstat.sh [options] LOG
@@ -25,7 +26,7 @@
 #     > /dev/null 2>&1 < /dev/null &
 set -uo pipefail
 
-VERSION=0.1.1
+VERSION=0.1.2
 PATTERN='[-]-file=analysis/accuracy_learning_curve'
 TASK_DIR=
 TASK_RE=
@@ -51,13 +52,10 @@ SAMPLES="$LOG.samples"
 TCK=$(getconf CLK_TCK)
 
 root() { pgrep -o -f "$PATTERN"; }
-# the PSOCK workers are children of the main process, so the tree covers them
-tree_pids() {
-    ps -eo pid=,ppid= | awk -v root="$1" '
-        { kids[$2] = kids[$2] " " $1 }
-        END { q[1] = root; n = 1
-              for (i = 1; i <= n; i++) { print q[i]; m = split(kids[q[i]], k, " ")
-                                         for (j = 1; j <= m; j++) q[++n] = k[j] } }'
+# R starts the PSOCK workers through `sh -c "... &"`, so they are not
+# children of the main process; they keep its session, started by setsid
+session_pids() {
+    ps -eo pid=,sid= | awk -v sid="$(ps -o sid= -p "$1" | tr -d ' ')" '$2 == sid {print $1}'
 }
 
 # Sets DELTA_READ (bytes) and DELTA_CPU (clock ticks) since the previous
@@ -71,7 +69,7 @@ deltas() {
     local pid r c n_io=0
     declare -A cur_r=() cur_c=()
     DELTA_READ=0; DELTA_CPU=0
-    for pid in $(tree_pids "$1"); do
+    for pid in $(session_pids "$1"); do
         c=$(awk '{print $14 + $15}' "/proc/$pid/stat" 2>/dev/null) || continue
         [ -n "$c" ] || continue
         cur_c[$pid]=$c
