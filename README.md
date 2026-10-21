@@ -122,6 +122,13 @@ setsid nohup server/memstat.sh --tasks data/results/learning_curve \
   > /dev/null 2>&1 < /dev/null &
 ```
 
+To read the last window as a key-value card, with an end estimate from
+the task rate when the number of tasks of the run is given:
+
+```
+server/memstat.sh --card --total 80 data/results/learning_curve/memstat.log
+```
+
 `server/memstat.sh --help` lists the options.
 
 ## Tests

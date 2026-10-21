@@ -17,6 +17,9 @@
 #   --tasks DIR G count the files of DIR matching grep -E G (finished tasks)
 #   --step S      seconds between samples (default 5)
 #   --window W    seconds per line (default 300)
+#   --card        print the last line of LOG as a key-value card and exit
+#   --total N     with --card, the tasks of the run, for an end estimate
+#                 from the task rate since the first line of LOG
 #   -h, --help    this help
 #   --version     the version
 #
@@ -26,12 +29,14 @@
 #     > /dev/null 2>&1 < /dev/null &
 set -uo pipefail
 
-VERSION=0.1.2
+VERSION=0.2.0
 PATTERN='[-]-file=analysis/accuracy_learning_curve'
 TASK_DIR=
 TASK_RE=
 STEP=5
 WINDOW=300
+CARD=0
+TOTAL=
 LOG=
 while [ $# -gt 0 ]; do
     case $1 in
@@ -41,12 +46,41 @@ while [ $# -gt 0 ]; do
         --tasks) TASK_DIR=$2; TASK_RE=$3; shift 3 ;;
         --step) STEP=$2; shift 2 ;;
         --window) WINDOW=$2; shift 2 ;;
+        --card) CARD=1; shift ;;
+        --total) TOTAL=$2; shift 2 ;;
         -?*) echo "memstat.sh: unknown option $1" >&2; exit 2 ;;
         *) [ -z "$LOG" ] || { echo "memstat.sh: one LOG only" >&2; exit 2; }
            LOG=$1; shift ;;
     esac
 done
 [ -n "$LOG" ] || { echo "usage: memstat.sh [options] LOG" >&2; exit 2; }
+if [ "$CARD" = 1 ]; then
+    # the end estimate assumes the remaining tasks take as long as the done ones
+    awk -v total="$TOTAL" '
+        function sec(t) { gsub(/[-T:]/, " ", t); return mktime(t, 1) }
+        NR == 1 { next }
+        NR == 2 { t0 = $1; d0 = $3 }
+        { t1 = $1; d1 = $3; last = $0 }
+        END {
+            if (last == "") { print "memstat.sh: no window in LOG yet" > "/dev/stderr"; exit 1 }
+            split(last, f, " ")
+            printf "%-11s %s UTC\n", "time", substr(f[1], 1, 10) " " substr(f[1], 12, 5)
+            printf "%-11s %s%s\n", "tasks", f[3], (total == "" ? "" : " of " total)
+            printf "%-11s %s GB (max %s)\n", "RAM", f[6], f[5]
+            printf "%-11s %s GB\n", "GPU memory", f[9]
+            printf "%-11s %s%%\n", "GPU use", f[12]
+            printf "%-11s %s MB/s\n", "read", f[15]
+            printf "%-11s %s cores\n", "CPU", f[18]
+            if (total != "") {
+                rate = (d1 - d0) / (sec(t1) - sec(t0))
+                if (d1 >= total) end = "done"
+                else if (rate > 0) end = "~" strftime("%H:%M", sec(t1) + (total - d1) / rate, 1) " UTC"
+                else end = "no task finished since the first line"
+                printf "%-11s %s\n", "end", end
+            }
+        }' "$LOG"
+    exit $?
+fi
 STAT=${MEMSTAT_CGROUP_STAT:-/sys/fs/cgroup/memory.stat}
 SAMPLES="$LOG.samples"
 TCK=$(getconf CLK_TCK)
