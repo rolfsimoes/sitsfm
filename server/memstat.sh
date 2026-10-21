@@ -29,7 +29,7 @@
 #     > /dev/null 2>&1 < /dev/null &
 set -uo pipefail
 
-VERSION=0.2.0
+VERSION=0.2.1
 PATTERN='[-]-file=analysis/accuracy_learning_curve'
 TASK_DIR=
 TASK_RE=
@@ -55,31 +55,28 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$LOG" ] || { echo "usage: memstat.sh [options] LOG" >&2; exit 2; }
 if [ "$CARD" = 1 ]; then
-    # the end estimate assumes the remaining tasks take as long as the done ones
-    awk -v total="$TOTAL" '
-        function sec(t) { gsub(/[-T:]/, " ", t); return mktime(t, 1) }
-        NR == 1 { next }
-        NR == 2 { t0 = $1; d0 = $3 }
-        { t1 = $1; d1 = $3; last = $0 }
-        END {
-            if (last == "") { print "memstat.sh: no window in LOG yet" > "/dev/stderr"; exit 1 }
-            split(last, f, " ")
-            printf "%-11s %s UTC\n", "time", substr(f[1], 1, 10) " " substr(f[1], 12, 5)
-            printf "%-11s %s%s\n", "tasks", f[3], (total == "" ? "" : " of " total)
-            printf "%-11s %s GB (max %s)\n", "RAM", f[6], f[5]
-            printf "%-11s %s GB\n", "GPU memory", f[9]
-            printf "%-11s %s%%\n", "GPU use", f[12]
-            printf "%-11s %s MB/s\n", "read", f[15]
-            printf "%-11s %s cores\n", "CPU", f[18]
-            if (total != "") {
-                rate = (d1 - d0) / (sec(t1) - sec(t0))
-                if (d1 >= total) end = "done"
-                else if (rate > 0) end = "~" strftime("%H:%M", sec(t1) + (total - d1) / rate, 1) " UTC"
-                else end = "no task finished since the first line"
-                printf "%-11s %s\n", "end", end
-            }
-        }' "$LOG"
-    exit $?
+    first=$(sed -n 2p "$LOG"); last=$(sed -n '$p' "$LOG")
+    [ -n "$first" ] || { echo "memstat.sh: no window in LOG yet" >&2; exit 1; }
+    set -- $last
+    printf '%-11s %s UTC\n' time "${1:0:10} ${1:11:5}"
+    printf '%-11s %s%s\n' tasks "$3" "${TOTAL:+ of $TOTAL}"
+    printf '%-11s %s GB (max %s)\n' RAM "$6" "$5"
+    printf '%-11s %s GB\n' "GPU memory" "$9"
+    printf '%-11s %s%%\n' "GPU use" "${12}"
+    printf '%-11s %s MB/s\n' read "${15}"
+    printf '%-11s %s cores\n' CPU "${18}"
+    if [ -n "$TOTAL" ]; then
+        # the end estimate assumes the remaining tasks take as long as the done ones
+        t1=$(date -u -d "$1" +%s); d1=$3
+        set -- $first
+        t0=$(date -u -d "$1" +%s); d0=$3
+        if [ "$d1" -ge "$TOTAL" ]; then end=done
+        elif [ "$d1" -gt "$d0" ]; then
+            end="~$(date -u -d "@$(( t1 + (TOTAL - d1) * (t1 - t0) / (d1 - d0) ))" +%H:%M) UTC"
+        else end="no task finished since the first line"; fi
+        printf '%-11s %s\n' end "$end"
+    fi
+    exit 0
 fi
 STAT=${MEMSTAT_CGROUP_STAT:-/sys/fs/cgroup/memory.stat}
 SAMPLES="$LOG.samples"
