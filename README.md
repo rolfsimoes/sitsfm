@@ -109,7 +109,7 @@ Rscript analysis/check_learning_curve.R 1 0.05,0.1 ts_tempcnn data/results/learn
 validation points of 2018 from the monthly Landsat cubes of 2017 and 2018
 on the server (the cubes of the labelled samples), with their 24 dates and
 10 bands, into `data/results/validation_2018/validation_series_2018.rds`.
-Mode `check`, the default, first compares 3 labelled samples of 2018 read
+Mode `check`, the default, first compares 10 labelled samples of 2018, in 3 tiles, read
 from the cubes with their stored values, writes nothing and exits with
 status 1 if a value differs. Optional arguments are the mode, the cubes
 folder and the number of cores:
