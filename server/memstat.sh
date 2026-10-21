@@ -25,7 +25,7 @@
 #     > /dev/null 2>&1 < /dev/null &
 set -uo pipefail
 
-VERSION=0.1.0
+VERSION=0.1.1
 PATTERN='[-]-file=analysis/accuracy_learning_curve'
 TASK_DIR=
 TASK_RE=
@@ -63,24 +63,28 @@ tree_pids() {
 # Sets DELTA_READ (bytes) and DELTA_CPU (clock ticks) since the previous
 # call over the tree; called without $( ), so that `seen` survives. A pid
 # first seen counts in full; on the first call nothing counts.
+# /proc/<pid>/io needs ptrace rights (Yama ptrace_scope 1 on the server
+# hides it from a non-ancestor), so DELTA_READ is NA if no pid shows it.
 declare -A seen_r=() seen_c=()
 first=1
 deltas() {
-    local pid r c
+    local pid r c n_io=0
     declare -A cur_r=() cur_c=()
     DELTA_READ=0; DELTA_CPU=0
     for pid in $(tree_pids "$1"); do
-        r=$(awk '$1 == "rchar:" {print $2}' "/proc/$pid/io" 2>/dev/null) || continue
         c=$(awk '{print $14 + $15}' "/proc/$pid/stat" 2>/dev/null) || continue
-        [ -n "$r" ] && [ -n "$c" ] || continue
-        cur_r[$pid]=$r; cur_c[$pid]=$c
-        if [ "$first" = 0 ]; then
-            DELTA_READ=$(( DELTA_READ + r - ${seen_r[$pid]:-0} ))
-            DELTA_CPU=$(( DELTA_CPU + c - ${seen_c[$pid]:-0} ))
-        fi
+        [ -n "$c" ] || continue
+        cur_c[$pid]=$c
+        [ "$first" = 0 ] && DELTA_CPU=$(( DELTA_CPU + c - ${seen_c[$pid]:-0} ))
+        r=$(awk '$1 == "rchar:" {print $2}' "/proc/$pid/io" 2>/dev/null) || continue
+        [ -n "$r" ] || continue
+        cur_r[$pid]=$r; n_io=$(( n_io + 1 ))
+        [ "$first" = 0 ] && DELTA_READ=$(( DELTA_READ + r - ${seen_r[$pid]:-0} ))
     done
+    [ "$n_io" -gt 0 ] || DELTA_READ=NA
     seen_r=(); seen_c=()
-    for pid in "${!cur_r[@]}"; do seen_r[$pid]=${cur_r[$pid]}; seen_c[$pid]=${cur_c[$pid]}; done
+    for pid in "${!cur_r[@]}"; do seen_r[$pid]=${cur_r[$pid]}; done
+    for pid in "${!cur_c[@]}"; do seen_c[$pid]=${cur_c[$pid]}; done
     first=0
 }
 tasks() {
@@ -104,7 +108,7 @@ while kill -0 "$main" 2>/dev/null; do
     ram=$(awk '$1 == "anon" {printf "%.1f", $2 / 1e9}' "$STAT")
     gpu=$(nvidia-smi --query-gpu=memory.used,utilization.gpu --format=csv,noheader,nounits 2>/dev/null |
         awk -F', *' 'NR == 1 {printf "%.1f %d", $1 * 1048576 / 1e9, $2}')
-    rate=$(awk -v b="$DELTA_READ" -v t="$dt" 'BEGIN {printf "%.1f", b / 1e6 / t}')
+    rate=$(awk -v b="$DELTA_READ" -v t="$dt" 'BEGIN {if (b == "NA") print "NA"; else printf "%.1f", b / 1e6 / t}')
     cores=$(awk -v c="$DELTA_CPU" -v k="$TCK" -v t="$dt" 'BEGIN {printf "%.1f", c / k / t}')
     echo "${ram:-NA} ${gpu:-NA NA} $rate $cores" >> "$SAMPLES"
     if [ $(( $(date +%s) - start )) -ge "$WINDOW" ] || ! kill -0 "$main" 2>/dev/null; then
