@@ -302,7 +302,7 @@ tasks <- purrr::pmap(tasks, list)
 # one table per fraction, so their tasks are not computed again
 for (task in tasks) {
   file <- task_file(task$ith_run, task$method, task$frac)
-  first_file <- fs::path_dir(file) / glue("round_{sprintf('%02d', task$ith_run)}_{task$method}.csv")
+  first_file <- fs::path(fs::path_dir(file), glue("round_{sprintf('%02d', task$ith_run)}_{task$method}.csv"))
   if (fs::file_exists(first_file) && !fs::file_exists(file)) {
     first <- read.csv(first_file)
     if (any(first[["fraction"]] == task$frac)) {
@@ -550,7 +550,7 @@ run_task <- function(task) {
     # predicted class of each point; row: its row in validation_data_2018.parquet
     val_file <- val2018_task_file(ith_run, method, frac)
     fs::dir_create(fs::path_dir(val_file))
-    pred_file <- fs::path_dir(val_file) / glue("{task_name}_pred.csv")
+    pred_file <- fs::path(fs::path_dir(val_file), glue("{task_name}_pred.csv"))
     pred_table <- data.frame(row = val_rows, label = ref, predicted = pred)
     write.csv(pred_table, glue("{pred_file}.tmp"), row.names = FALSE)
     fs::file_move(glue("{pred_file}.tmp"), pred_file)
