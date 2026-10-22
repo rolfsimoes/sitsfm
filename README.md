@@ -64,7 +64,16 @@ skip the tasks not started; remove the file before the next run. Optional argume
 rounds, the fractions, the methods, the samples (`hf`: the labelled
 samples on Hugging Face), the number of workers and the results folder
 (default `data/results/learning_curve`; the samples, splits, encoded
-samples, task CSVs and STOP file are all read and written there). Each
+samples, task CSVs and STOP file are all read and written there), and the
+2018 validation points of step 10 (`none`, the default; `all`; or a number
+of evenly spaced points, for a check). With 2018 validation points, each
+task also classifies them and writes their metrics in the same format to
+`val2018/` in the results folder: overall accuracy (not weighted; the
+points are not allocated in proportion to area), kappa, F1 of the 8 classes
+of the points, and run time. Predictions of the 3 classes absent from the
+points (Mangrove, Nat_NonVeg, Water) count as errors. The points in the
+input of each method are saved once in the results folder
+(`val2018_series.rds`, `val2018_encoded_METHOD.rds`). Each
 task trains with its share of the CPU quota as torch threads, divided
 among the processes on the GPU. A stage run of one
 round, two fractions, one encoder and the TempCNN on the raw time series,
@@ -96,13 +105,26 @@ and new) and prints the number of tasks compared, the largest accuracy
 difference and the median time ratio; it exits with status 1 if a task
 is missing. It writes nothing in `data/results/learning_curve` and
 refuses to run while results of an earlier check are in its folder.
-Optional arguments are the number of rounds, the fractions, the methods
-and the check folder; the second line reruns the two recorded TempCNN
-tasks of round 1 at 5% and 10%:
+Optional arguments are the number of rounds, the fractions, the methods,
+the check folder and the 2018 validation points of step 7; the second line
+reruns the two recorded TempCNN tasks of round 1 at 5% and 10%:
 
 ```
 Rscript analysis/check_learning_curve.R
 Rscript analysis/check_learning_curve.R 1 0.05,0.1 ts_tempcnn data/results/learning_curve_check_tempcnn
+```
+
+With 2018 validation points, `comparison.csv` also holds their accuracy
+(`acc_val2018`). The evaluation of round 1 on the 2018 validation points
+has a check stage on 400 points, one fraction and one method of each input
+(encoder, AlphaEarth, time series), then the run of all fractions and
+methods on all points. Start them detached from the repository root, with
+one OpenBLAS thread per R process (otherwise OpenBLAS opens one idle thread
+per core in each process; the workers inherit the environment):
+
+```
+setsid nohup env OPENBLAS_NUM_THREADS=1 Rscript analysis/check_learning_curve.R 1 0.05 btwins,ae_centre_y,ts_mlp data/results/validation_2018/check 400 > data/results/validation_2018/check_stage.log 2>&1 < /dev/null &
+setsid nohup env OPENBLAS_NUM_THREADS=1 Rscript analysis/check_learning_curve.R 1 0.05,0.1,0.15,0.2,0.25,0.5,0.75,1 btwins,vicreg,lejepa,ts_mlp,ts_tempcnn,ae_centre_y data/results/validation_2018/learning_curve all > data/results/validation_2018/run.log 2>&1 < /dev/null &
 ```
 
 10. `validation_series_2018.R`: reads the Landsat time series of the 24,000

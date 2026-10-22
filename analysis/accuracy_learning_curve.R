@@ -10,9 +10,12 @@
 # tasks run in parallel workers.
 #
 # Optional arguments: rounds, fractions, methods, samples file ("hf": the
-# labelled samples on Hugging Face), workers, results folder, e.g.
+# labelled samples on Hugging Face), workers, results folder, 2018
+# validation points ("none", "all", or a number of them for a check), e.g.
 #   Rscript analysis/accuracy_learning_curve.R 1 0.05,1 btwins,ts_tempcnn hf 2
 # The AlphaEarth methods (ae_*) are not in the default methods; name them.
+# With 2018 validation points, each task also classifies them and writes
+# their metrics in the subfolder val2018 of the results folder.
 library(sits)
 library(glue)
 
@@ -23,12 +26,15 @@ methods <- c("btwins", "vicreg", "lejepa", "ts_mlp", "ts_tempcnn")
 samples_file <- "hf"
 n_workers <- 1
 results_folder <- "data/results/learning_curve"
+val2018 <- "none"
 if (length(args) >= 1) n_runs <- as.integer(args[[1]])
 if (length(args) >= 2) fractions <- as.numeric(strsplit(args[[2]], ",")[[1]])
 if (length(args) >= 3) methods <- strsplit(args[[3]], ",")[[1]]
 if (length(args) >= 4) samples_file <- args[[4]]
 if (length(args) >= 5) n_workers <- as.integer(args[[5]])
 if (length(args) >= 6) results_folder <- args[[6]]
+if (length(args) >= 7) val2018 <- args[[7]]
+stopifnot(val2018 %in% c("none", "all") || grepl("^[0-9]+$", val2018))
 # each fraction has its own random substream, numbered 100 * fraction
 stopifnot(abs(fractions * 100 - round(fractions * 100)) < 1e-9)
 
@@ -97,6 +103,10 @@ ae_repo <- "rolfsimoes/samples_cerrado_aef"
 ae_files <- list(
   ae_centre_y = "alphaearth_labelled_centre_y.parquet"
 )
+# the same reading at the 2018 validation points, rows in the parquet order
+ae_val2018_files <- list(
+  ae_centre_y = "alphaearth_validation2018_centre_y.parquet"
+)
 alphaearth_samples <- function(method) {
   files <- ae_files[[method]]
   # the Y - 1 and Y methods will list two files and join their bands
@@ -110,6 +120,19 @@ alphaearth_samples <- function(method) {
   )
   samples
 }
+encoder_file <- function(model) {
+  model_file <- glue("data/embeddings/embeddings/{model}/encoder/{model}.rds")
+  if (!fs::file_exists(model_file)) {
+    fs::dir_create(fs::path_dir(model_file))
+    encoder <- sits_from_hf(
+      repo = "e-sensing/encoders_cerrado",
+      file = glue("ssl_{model}_tcnn_model_2017_2024.rds"),
+      type = "model"
+    )
+    saveRDS(encoder, model_file)
+  }
+  model_file
+}
 encode_samples <- function(model) {
   enc_file <- results_dir / glue("encoded_{model}.rds")
   if (fs::file_exists(enc_file)) {
@@ -118,19 +141,9 @@ encode_samples <- function(model) {
   if (model %in% names(ae_files)) {
     samples_enc <- alphaearth_samples(model)
   } else {
-    model_file <- glue("data/embeddings/embeddings/{model}/encoder/{model}.rds")
-    if (!fs::file_exists(model_file)) {
-      fs::dir_create(fs::path_dir(model_file))
-      encoder <- sits_from_hf(
-        repo = "e-sensing/encoders_cerrado",
-        file = glue("ssl_{model}_tcnn_model_2017_2024.rds"),
-        type = "model"
-      )
-      saveRDS(encoder, model_file)
-    }
     samples_enc <- sits_encode(
       data = labelled_samples,
-      encoder = readRDS(model_file),
+      encoder = readRDS(encoder_file(model)),
       multicores = 20,
       gpu_memory = 80,
       batch_size = batch_size
@@ -149,6 +162,76 @@ encode_samples <- function(model) {
 }
 for (method in setdiff(methods, c("ts_mlp", "ts_tempcnn"))) {
   encode_samples(method)
+}
+
+#
+# 2b. Optional: the 2018 validation points in the input of each method;
+#     the raw time series methods share one file
+#
+val2018_dir <- results_dir / "val2018"
+val2018_file <- function(method) {
+  if (startsWith(method, "ts_")) {
+    return(results_dir / "val2018_series.rds")
+  }
+  results_dir / glue("val2018_encoded_{method}.rds")
+}
+val2018_task_file <- function(ith_run, method, frac) {
+  val2018_dir / fs::path_file(task_file(ith_run, method, frac))
+}
+encode_val2018 <- function(method) {
+  file <- val2018_file(method)
+  if (fs::file_exists(file)) {
+    # a file left by a run on other points must not be used
+    if (nrow(readRDS(file)) != nrow(val_series)) {
+      stop(glue("{file} has other points than asked for; remove it"))
+    }
+    return(invisible(file))
+  }
+  started <- Sys.time()
+  if (startsWith(method, "ts_")) {
+    val_enc <- val_series
+  } else if (method %in% names(ae_val2018_files)) {
+    val_enc <- sits_from_hf(repo = ae_repo, file = ae_val2018_files[[method]], type = "dataset")
+    val_enc <- val_enc[val_rows, ]
+    # both files follow the parquet order; coordinates read by two routes
+    stopifnot(
+      max(abs(val_enc[["longitude"]] - val_series[["longitude"]])) < 1e-6,
+      max(abs(val_enc[["latitude"]] - val_series[["latitude"]])) < 1e-6
+    )
+  } else {
+    val_enc <- sits_encode(
+      data = val_series,
+      encoder = readRDS(encoder_file(method)),
+      multicores = 20,
+      gpu_memory = 80,
+      batch_size = batch_size
+    )
+  }
+  stopifnot(
+    nrow(val_enc) == nrow(val_series),
+    identical(unname(val_enc[["label"]]), unname(val_series[["label"]]))
+  )
+  saveRDS(val_enc, glue("{file}.tmp"))
+  fs::file_move(glue("{file}.tmp"), file)
+  message(glue(
+    "2018 validation points, {method}: {nrow(val_enc)} rows in ",
+    "{round(difftime(Sys.time(), started, units = 'mins'), 1)} min"
+  ))
+  invisible(file)
+}
+if (val2018 != "none") {
+  fs::dir_create(val2018_dir)
+  # series of analysis/validation_series_2018.R, rows in the parquet order
+  val_series <- readRDS("data/results/validation_2018/validation_series_2018.rds")
+  val_rows <- seq_len(nrow(val_series))
+  if (val2018 != "all") {
+    # evenly spaced rows: the file is sorted by class, so every class enters
+    val_rows <- unique(round(seq(1, nrow(val_series), length.out = as.integer(val2018))))
+  }
+  val_series <- val_series[val_rows, ]
+  for (method in methods) {
+    encode_val2018(method)
+  }
 }
 
 #
@@ -212,7 +295,8 @@ for (task in tasks) {
   }
 }
 done <- purrr::map_lgl(tasks, function(task) {
-  task_done(task_file(task$ith_run, task$method, task$frac), task$frac)
+  task_done(task_file(task$ith_run, task$method, task$frac), task$frac) &&
+    (val2018 == "none" || task_done(val2018_task_file(task$ith_run, task$method, task$frac), task$frac))
 })
 for (task in tasks[done]) {
   message(glue("round {task$ith_run} {task$method} fraction {task$frac}: done, skipped"))
@@ -284,6 +368,7 @@ run_task <- function(task) {
   # by default); the classification runs on the CPU with the worker's
   set_threads(threads, quiet = TRUE)
   ml_model <- sits_train(samples = samples_red, ml_method = ml_method, threads = threads)
+  train_seconds <- as.numeric(difftime(Sys.time(), start_time, units = "secs"))
   if (torch::cuda_is_available()) {
     assign("on_gpu", TRUE, envir = worker_cache)
   }
@@ -318,6 +403,46 @@ run_task <- function(task) {
       acc$byClass[, "F1"], seconds
     )
   )
+  if (val2018 != "none") {
+    val_start <- Sys.time()
+    val_samples <- cached(as.character(val2018_file(method)), function() readRDS(val2018_file(method)))
+    class_val <- sits_classify(
+      data = val_samples,
+      ml_model = ml_model,
+      multicores = 20,
+      gpu_memory = 80,
+      batch_size = batch_size,
+      progress = FALSE
+    )
+    # seconds: training and classification, as for the internal test
+    val_seconds <- train_seconds + as.numeric(difftime(Sys.time(), val_start, units = "secs"))
+    # sits_accuracy() drops predictions of classes absent from the reference
+    # (Mangrove, Nat_NonVeg, Water); here they count as errors
+    pred <- purrr::map_chr(class_val[["predicted"]], function(p) p[["class"]])
+    ref <- unname(class_val[["label"]])
+    classes <- union(sort(unique(ref)), sort(unique(pred)))
+    acc_val <- caret::confusionMatrix(factor(pred, levels = classes), factor(ref, levels = classes))
+    # F1 only of the classes in the reference; the overall accuracy is not
+    # weighted, and the class allocation of the points is not proportional to area
+    f1_val <- acc_val$byClass[paste0("Class: ", sort(unique(ref))), "F1"]
+    message(glue(
+      "round {ith_run} {method} fraction {frac}: ",
+      "2018 validation accuracy {round(acc_val$overall[['Accuracy']], 4)}"
+    ))
+    val_result <- data.frame(
+      round = ith_run,
+      method = method,
+      fraction = frac,
+      n_train = nrow(samples_red),
+      n_valid = nrow(val_samples),
+      metric = c("accuracy", "kappa", rep("f1", length(f1_val)), "seconds"),
+      class = c(NA, NA, sort(unique(ref)), NA),
+      value = c(acc_val$overall[["Accuracy"]], acc_val$overall[["Kappa"]], f1_val, val_seconds)
+    )
+    val_file <- val2018_task_file(ith_run, method, frac)
+    write.csv(val_result, glue("{val_file}.tmp"), row.names = FALSE)
+    fs::file_move(glue("{val_file}.tmp"), val_file)
+  }
   file <- task_file(ith_run, method, frac)
   write.csv(result, glue("{file}.tmp"), row.names = FALSE)
   fs::file_move(glue("{file}.tmp"), file)
@@ -390,7 +515,8 @@ if (n_workers <= 1) {
     "results_dir", "stop_file", "samples_file", "read_samples", "base_stream",
     "round_stream", "fraction_stream", "split_file", "task_file",
     "worker_cache", "cached", "run_task", "cpu_quota", "n_workers",
-    "gpu_processes", "task_threads", "set_threads"
+    "gpu_processes", "task_threads", "set_threads", "val2018", "val2018_dir", "val2018_file",
+    "val2018_task_file"
   ))
   invisible(parallel::parLapplyLB(cl, tasks, run_task))
   parallel::stopCluster(cl)

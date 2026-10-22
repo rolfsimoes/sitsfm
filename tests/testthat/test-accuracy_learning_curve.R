@@ -4,7 +4,8 @@
 # sits_sample(); set properties checked with base R; results of one worker
 # compared with results of two; torch threads inside the training traced
 # in torch_manual_seed(), which sits calls once per training.
-# It cannot see the encoders, the GPU or the run time of the real data.
+# It cannot see the encoders, the GPU or the run time of the real data,
+# nor the AlphaEarth and encoder inputs of the 2018 validation points.
 # Without a GPU every task gets the same threads; the share among the
 # processes on a GPU (nvidia-smi) is checked only as training = task value.
 script <- normalizePath(testthat::test_path("..", "..", "analysis", "accuracy_learning_curve.R"))
@@ -16,11 +17,11 @@ new_dir <- function() {
     d
 }
 run <- function(dir, fractions = "0.1,0.5,1", methods = "ts_mlp", workers = "1", rounds = "1",
-                folder = NULL, env = character()) {
+                folder = NULL, env = character(), val2018 = NULL) {
     old <- setwd(dir)
     on.exit(setwd(old))
     suppressWarnings(system2(
-        "Rscript", c(script, rounds, fractions, methods, modis, workers, folder),
+        "Rscript", c(script, rounds, fractions, methods, modis, workers, folder, val2018),
         stdout = TRUE, stderr = TRUE, env = env
     ))
 }
@@ -224,4 +225,54 @@ test_that("the results folder argument moves every file the script reads and wri
     expect_true(file.exists(file.path(folder, "round_01_btwins_f100.csv")))
     # the default folder stays empty
     expect_length(list.files(results(work8), all.files = TRUE, no.. = TRUE), 0)
+})
+
+# stand-in for the 2018 validation points: samples of the internal test of
+# round 1, saved where the script reads the 2018 series
+val2018_dir <- function(split_from, points) {
+    d <- new_dir()
+    file.copy(file.path(results(split_from), "round_01_split.rds"), results(d))
+    dir.create(file.path(d, "data", "results", "validation_2018"))
+    saveRDS(points, file.path(d, "data", "results", "validation_2018", "validation_series_2018.rds"))
+    d
+}
+val_file <- function(dir, method, frac) {
+    file.path(results(dir), "val2018", basename(task_file(dir, method, frac)))
+}
+
+test_that("2018 points equal to the internal test give its metrics, and the internal test is unchanged", {
+    # oracle: the internal metrics, computed by sits_accuracy() on the same samples
+    work9 <- val2018_dir(work, sits::samples_modis_ndvi[split$valid, ])
+    log9 <- run(work9, "0.5,1", folder = "data/results/learning_curve", val2018 = "all")
+    expect_null(attr(log9, "status"), info = tail_of(log9))
+    for (f in c(0.5, 1)) {
+        internal <- no_seconds(task_file(work9, "ts_mlp", f))
+        expect_equal(internal, no_seconds(task_file(work, "ts_mlp", f)))
+        v <- no_seconds(val_file(work9, "ts_mlp", f))
+        expect_equal(unique(v$n_valid), length(split$valid))
+        for (m in c("accuracy", "kappa")) {
+            expect_equal(v$value[v$metric == m], internal$value[internal$metric == m])
+        }
+        f1 <- internal$value[internal$metric == "f1"]
+        names(f1) <- internal$class[internal$metric == "f1"]
+        expect_equal(v$value[v$metric == "f1"], unname(f1[v$class[v$metric == "f1"]]))
+    }
+    # a second run skips the tasks whose two files are done
+    log9b <- run(work9, "0.5,1", folder = "data/results/learning_curve", val2018 = "all")
+    expect_equal(sum(grepl("done, skipped", log9b)), 2)
+})
+
+test_that("2018 metrics hold only the classes of the reference, on the points asked for", {
+    # stand-in without Forest: the model still predicts Forest, which the
+    # metrics count as errors (not checked here: the predictions are not saved)
+    points <- sits::samples_modis_ndvi[split$valid, ]
+    points <- points[points$label != "Forest", ]
+    work10 <- val2018_dir(work, points)
+    log10 <- run(work10, "1", folder = "data/results/learning_curve", val2018 = "40")
+    expect_null(attr(log10, "status"), info = tail_of(log10))
+    v <- read.csv(val_file(work10, "ts_mlp", 1))
+    expect_equal(unique(v$n_valid), 40)
+    expect_setequal(v$class[v$metric == "f1"], c("Cerrado", "Pasture", "Soy_Corn"))
+    acc <- v$value[v$metric == "accuracy"]
+    expect_true(acc >= 0 && acc <= 1)
 })

@@ -8,10 +8,14 @@
 # inputs; nothing is written in the recorded folder.
 #
 # Run from the repository root. Optional arguments are the number of
-# rounds, the fractions, the methods and the check folder:
+# rounds, the fractions, the methods, the check folder and the 2018
+# validation points ("none", "all" or a number of them), which each
+# rerun task also classifies (see accuracy_learning_curve.R):
 #   Rscript analysis/check_learning_curve.R
 #   Rscript analysis/check_learning_curve.R 1 0.05,0.1 ts_tempcnn \
 #     data/results/learning_curve_check_tempcnn
+#   Rscript analysis/check_learning_curve.R 1 0.05 btwins,ae_centre_y,ts_mlp \
+#     data/results/validation_2018/check 400
 library(glue)
 
 recorded_dir <- fs::path("data/results/learning_curve")
@@ -21,11 +25,13 @@ n_rounds <- 2
 fractions <- c(0.05, 0.1)
 methods <- c("btwins", "vicreg", "lejepa", "ts_mlp")
 n_workers <- 8
+val2018 <- "none"
 args <- commandArgs(trailingOnly = TRUE)
 if (length(args) >= 1) n_rounds <- as.integer(args[[1]])
 if (length(args) >= 2) fractions <- as.numeric(strsplit(args[[2]], ",")[[1]])
 if (length(args) >= 3) methods <- strsplit(args[[3]], ",")[[1]]
 if (length(args) >= 4) check_dir <- fs::path(args[[4]])
+if (length(args) >= 5) val2018 <- args[[5]]
 
 task_name <- function(ith_run, method, frac) {
   glue("round_{sprintf('%02d', ith_run)}_{method}_f{sprintf('%03d', round(frac * 100))}.csv")
@@ -74,7 +80,7 @@ status <- system2(
   "Rscript",
   c(
     "analysis/accuracy_learning_curve.R", n_rounds, paste(fractions, collapse = ","),
-    paste(methods, collapse = ","), "hf", n_workers, as.character(check_dir)
+    paste(methods, collapse = ","), "hf", n_workers, as.character(check_dir), val2018
   ),
   stdout = as.character(log_file), stderr = as.character(log_file)
 )
@@ -91,6 +97,8 @@ metric_value <- function(file, metric) {
 new_files <- check_dir / tasks[["file"]]
 recorded_files <- recorded_dir / tasks[["file"]]
 found <- fs::file_exists(new_files) & fs::file_exists(recorded_files)
+val_files <- check_dir / "val2018" / tasks[["file"]]
+if (val2018 != "none") found <- found & fs::file_exists(val_files)
 cmp <- tasks[found, c("ith_run", "method", "frac", "file")]
 names(cmp) <- c("round", "method", "fraction", "file")
 cmp[["acc_recorded"]] <- vapply(recorded_files[found], metric_value, 0, "accuracy")
@@ -99,6 +107,9 @@ cmp[["acc_diff"]] <- cmp[["acc_new"]] - cmp[["acc_recorded"]]
 cmp[["sec_recorded"]] <- vapply(recorded_files[found], metric_value, 0, "seconds")
 cmp[["sec_new"]] <- vapply(new_files[found], metric_value, 0, "seconds")
 cmp[["sec_ratio"]] <- cmp[["sec_new"]] / cmp[["sec_recorded"]]
+if (val2018 != "none") {
+  cmp[["acc_val2018"]] <- vapply(val_files[found], metric_value, 0, "accuracy")
+}
 cmp_file <- check_dir / "comparison.csv"
 write.csv(cmp, glue("{cmp_file}.tmp"), row.names = FALSE)
 fs::file_move(glue("{cmp_file}.tmp"), cmp_file)
