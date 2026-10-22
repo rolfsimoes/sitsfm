@@ -7,12 +7,12 @@
 # Mode "check" (the default) reads 10 labelled samples of 2018, in 3
 # tiles, from the cubes and compares them with the stored values; it writes nothing and
 # exits with status 1 if a value differs. Mode "all" writes
-# data/results/validation_2018/validation_series_2018.rds, rows in the
-# order of the parquet file.
+# data/results/sbsr2027/val-2018/inputs/validation_series_2018.rds, rows in
+# the order of the parquet file.
 #
 # Optional arguments: mode, cubes folder, multicores, e.g.
-#   Rscript analysis/validation_series_2018.R check
-#   Rscript analysis/validation_series_2018.R all ~/rascunho-gpu/biomasbr-sits/cerrado/cubes 16
+#   Rscript analysis/sbsr2027/validation_series_2018.R check
+#   Rscript analysis/sbsr2027/validation_series_2018.R all ~/rascunho-gpu/biomasbr-sits/cerrado/cubes 16
 library(sits)
 library(glue)
 
@@ -69,7 +69,7 @@ get_series <- function(points, tiles = NULL) {
 # 2. Check: 10 labelled samples of 2018 in 3 tiles against their stored values
 #
 if (mode == "check") {
-  samples <- readRDS("data/results/learning_curve/labelled_samples.rds")
+  samples <- readRDS("data/results/sbsr2027/split-70-30/inputs/labelled_samples.rds")
   samples <- samples[format(samples[["end_date"]], "%Y") == "2018", ]
   # 10 samples from 3 tiles: each tile opened costs its thousands of files
   set.seed(7)
@@ -120,7 +120,7 @@ message(glue(
   "{nrow(series)} points, dates per point {paste(unique(n_dates), collapse = ',')}, ",
   "points with NA {n_na}, {round(difftime(Sys.time(), started, units = 'mins'), 1)} min"
 ))
-out_dir <- fs::dir_create("data/results/validation_2018")
+out_dir <- fs::dir_create("data/results/sbsr2027/val-2018/inputs")
 out_file <- out_dir / "validation_series_2018.rds"
 saveRDS(series, glue("{out_file}.tmp"))
 fs::file_move(glue("{out_file}.tmp"), out_file)

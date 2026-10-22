@@ -14,7 +14,7 @@
 # fails. A file is renamed to its final name only if its checks pass.
 #
 # Optional argument: sets, e.g.
-#   Rscript analysis/alphaearth_samples.R validation2018
+#   Rscript analysis/sbsr2027/alphaearth_samples.R validation2018
 library(sits)
 library(glue)
 
@@ -41,7 +41,7 @@ check <- function(ok, what) {
 read_source <- function(set) {
   if (set == "labelled") {
     # the copy saved by the learning curve is the one its splits come from
-    readRDS("data/results/learning_curve/labelled_samples.rds")
+    readRDS("data/results/sbsr2027/split-70-30/inputs/labelled_samples.rds")
   } else {
     sits_from_parquet("data/validation/validation_data_2018.parquet")
   }

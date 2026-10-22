@@ -9,7 +9,10 @@ This package contains scripts for running foundational models using the `sits` p
 
 The scripts can be found in the `analysis` directory. All data necessary 
 to run them in on Hugging Face. The results of each step are also available
-in Hugging Face. 
+in Hugging Face. The scripts of the SBSR 2027 experiments (steps 7 to 10
+and the AlphaEarth scripts) are in `analysis/sbsr2027` and write their
+results in `data/results/sbsr2027` (see "Results of the SBSR 2027
+experiments" below).
 
 1. `generate_ssl_encoders.R`: reads a set of samples and produces 
 foundational models for the MAE, LeJEPA, VICReg, and Barlow Twins encoders
@@ -42,7 +45,7 @@ step 4 to measure the accuracy of the classification of the Alpha Earth
 embeddings for year 2018. This classification has been done using the
 same set of labelled samples used in step 5. 
 
-7. `accuracy_learning_curve.R`: measures which method reaches a given
+7. `sbsr2027/accuracy_learning_curve.R`: measures which method reaches a given
 accuracy with fewer training samples. It compares the LeJEPA, VICReg and
 Barlow Twins encoders, frozen, each with an MLP trained on its embeddings,
 against an MLP and a TempCNN trained on the raw time series. The method
@@ -55,32 +58,32 @@ validation and 70% for training, and trains every method on the same
 nested fractions of the 70%. The split of each round is saved
 (`round_RR_split.rds`); a later run reads it and does not draw it again,
 and stops if it lacks a fraction asked for. Each round, method and fraction is one task
-with its own CSV (`round_RR_METHOD_fFFF.csv` in
-`data/results/learning_curve`): overall accuracy, kappa, F1 per class and
+with its own CSV (`round-RR/split-70-30/round_RR_METHOD_fFFF.csv` in the
+results folder): overall accuracy, kappa, F1 per class and
 run time. A task whose CSV is complete is skipped, so a run can be resumed,
 and tasks run in parallel workers. Each task saves its trained model in
-`models/` of the results folder (`round_RR_METHOD_fFFF.rds`) with its
+`models/` of its round (`round-RR/models/round_RR_METHOD_fFFF.rds`) with its
 metadata (`.json`: task, training seconds, date, sitsfm commit, sits and
 torch versions, md5 of the sits files and of the model); a later task reads
 the model instead of training if the md5 of the sits files, the sitsfm
 commit and the md5 of the model match, and trains it again otherwise, with
 the training seconds of the metadata in its run time. To stop a run without losing the
-tasks in progress, create `data/results/learning_curve/STOP`: the workers
+tasks in progress, create `STOP` in the results folder: the workers
 skip the tasks not started; remove the file before the next run. Optional arguments are the number of
 rounds, the fractions, the methods, the samples (`hf`: the labelled
 samples on Hugging Face), the number of workers and the results folder
-(default `data/results/learning_curve`; the samples, splits, encoded
-samples, task CSVs and STOP file are all read and written there), and the
+(default `data/results/sbsr2027/split-70-30`; the samples, splits, encoded
+samples, task CSVs, models and STOP file are all read and written there), and the
 2018 validation points of step 10 (`none`, the default; `all`; or a number
 of evenly spaced points, for a check). With 2018 validation points, each
 task also classifies them and writes their metrics in the same format to
-`val2018/` in the results folder: overall accuracy (not weighted; the
+`round-RR/val-2018/` in the results folder: overall accuracy (not weighted; the
 points are not allocated in proportion to area), kappa, F1 of the 8 classes
 of the points, and run time. Predictions of the 3 classes absent from the
 points (Mangrove, Nat_NonVeg, Water) count as errors. The predicted class
-of each point goes to `val2018/round_RR_METHOD_fFFF_pred.csv` (`row` in
+of each point goes to `round-RR/val-2018/round_RR_METHOD_fFFF_pred.csv` (`row` in
 `validation_data_2018.parquet`, `label`, `predicted`). The points in the
-input of each method are saved once in the results folder
+input of each method are saved once in `inputs/` of the results folder
 (`val2018_series.rds`, `val2018_encoded_METHOD.rds`). Each
 task trains with its share of the CPU quota as torch threads, divided
 among the processes on the GPU. A stage run of one
@@ -88,38 +91,46 @@ round, two fractions, one encoder and the TempCNN on the raw time series,
 in 4 workers:
 
 ```
-Rscript analysis/accuracy_learning_curve.R 1 0.05,1 btwins,ts_tempcnn hf 4
+Rscript analysis/sbsr2027/accuracy_learning_curve.R 1 0.05,1 btwins,ts_tempcnn hf 4
 ```
 
-8. `summary_learning_curve.R`: reads the result files of step 7 and writes,
-in `data/results/learning_curve/summary`, the mean and standard deviation
+8. `sbsr2027/summary_learning_curve.R`: reads the result files of step 7
+for one evaluation set (`round-RR/split-70-30/`, the internal test, or
+`round-RR/val-2018/`, the 2018 points) of an experiment folder (default
+`data/results/sbsr2027/split-70-30`) and writes, in its
+`summary/EVALUATION/`, the mean and standard deviation
 over rounds of each method and fraction (overall accuracy, kappa, macro F1,
 F1 per class), the paired differences of each method against the MLP on
 the raw time series with their 95% interval, and two
 figures: the learning curve and the paired differences. It works on a run
-in progress; `n_rounds` says how many rounds each number uses.
+in progress; `n_rounds` says how many rounds each number uses. With one
+round the standard deviation and the interval are NA, and the figures have
+no band and no bars. The optional arguments are the experiment folder and
+the evaluation set (`split-70-30`, the default, or `val-2018`):
 
 ```
-Rscript analysis/summary_learning_curve.R
+Rscript analysis/sbsr2027/summary_learning_curve.R
+Rscript analysis/sbsr2027/summary_learning_curve.R data/results/sbsr2027/val-2018 val-2018
 ```
 
-9. `check_learning_curve.R`: reruns 16 recorded tasks of step 7 (rounds
+9. `sbsr2027/check_learning_curve.R`: reruns 16 recorded tasks of step 7 (rounds
 1 and 2, fractions 5% and 10%, the three encoders and the MLP on the raw
-time series, 8 workers) in `data/results/learning_curve_check`, which
-links the labelled samples, splits and encoded samples of
-`data/results/learning_curve`. It writes the log of the run
-(`check.log`) and `comparison.csv` there (accuracy and seconds, recorded
-and new) and prints the number of tasks compared, the largest accuracy
+time series, 8 workers) in `data/results/sbsr2027/split-70-30/checks/rerun`,
+an experiment folder that links the labelled samples and encoded samples
+(`inputs/`) and the splits (`round-RR/`) of
+`data/results/sbsr2027/split-70-30`. It writes the log of the run
+(`logs/check.log`) and one `comparison.csv` in each round folder (accuracy
+and seconds, recorded and new) and prints the number of tasks compared, the largest accuracy
 difference and the median time ratio; it exits with status 1 if a task
-is missing. It writes nothing in `data/results/learning_curve` and
+is missing. It writes nothing in the recorded folder and
 refuses to run while results of an earlier check are in its folder.
 Optional arguments are the number of rounds, the fractions, the methods,
 the check folder and the 2018 validation points of step 7; the second line
 reruns the two recorded TempCNN tasks of round 1 at 5% and 10%:
 
 ```
-Rscript analysis/check_learning_curve.R
-Rscript analysis/check_learning_curve.R 1 0.05,0.1 ts_tempcnn data/results/learning_curve_check_tempcnn
+Rscript analysis/sbsr2027/check_learning_curve.R
+Rscript analysis/sbsr2027/check_learning_curve.R 1 0.05,0.1 ts_tempcnn data/results/sbsr2027/split-70-30/checks/tempcnn
 ```
 
 With 2018 validation points, `comparison.csv` also holds their accuracy
@@ -131,22 +142,75 @@ one OpenBLAS thread per R process (otherwise OpenBLAS opens one idle thread
 per core in each process; the workers inherit the environment):
 
 ```
-setsid nohup env OPENBLAS_NUM_THREADS=1 Rscript analysis/check_learning_curve.R 1 0.05 btwins,ae_centre_y,ts_mlp data/results/validation_2018/check 400 > data/results/validation_2018/check_stage.log 2>&1 < /dev/null &
-setsid nohup env OPENBLAS_NUM_THREADS=1 Rscript analysis/check_learning_curve.R 1 0.05,0.1,0.15,0.2,0.25,0.5,0.75,1 btwins,vicreg,lejepa,ts_mlp,ts_tempcnn,ae_centre_y data/results/validation_2018/learning_curve all > data/results/validation_2018/run.log 2>&1 < /dev/null &
+mkdir -p data/results/sbsr2027/val-2018/logs
+setsid nohup env OPENBLAS_NUM_THREADS=1 Rscript analysis/sbsr2027/check_learning_curve.R 1 0.05 btwins,ae_centre_y,ts_mlp data/results/sbsr2027/val-2018/checks/check-400 400 > data/results/sbsr2027/val-2018/logs/check_stage.log 2>&1 < /dev/null &
+setsid nohup env OPENBLAS_NUM_THREADS=1 Rscript analysis/sbsr2027/check_learning_curve.R 1 0.05,0.1,0.15,0.2,0.25,0.5,0.75,1 btwins,vicreg,lejepa,ts_mlp,ts_tempcnn,ae_centre_y data/results/sbsr2027/val-2018 all > data/results/sbsr2027/val-2018/logs/run.log 2>&1 < /dev/null &
 ```
 
-10. `validation_series_2018.R`: reads the Landsat time series of the 24,000
+10. `sbsr2027/validation_series_2018.R`: reads the Landsat time series of the 24,000
 validation points of 2018 from the monthly Landsat cubes of 2017 and 2018
 on the server (the cubes of the labelled samples), with their 24 dates and
-10 bands, into `data/results/validation_2018/validation_series_2018.rds`.
+10 bands, into `data/results/sbsr2027/val-2018/inputs/validation_series_2018.rds`.
 Mode `check`, the default, first compares 10 labelled samples of 2018, in 3 tiles, read
 from the cubes with their stored values, writes nothing and exits with
 status 1 if a value differs. Optional arguments are the mode, the cubes
 folder and the number of cores:
 
 ```
-Rscript analysis/validation_series_2018.R check
-Rscript analysis/validation_series_2018.R all ~/rascunho-gpu/biomasbr-sits/cerrado/cubes 16
+Rscript analysis/sbsr2027/validation_series_2018.R check
+Rscript analysis/sbsr2027/validation_series_2018.R all ~/rascunho-gpu/biomasbr-sits/cerrado/cubes 16
+```
+
+## Results of the SBSR 2027 experiments
+
+Each experiment has its own folder in `data/results/sbsr2027`, and each
+round folder has the same structure in both experiments:
+
+```
+split-70-30/                 the 10-round experiment
+  inputs/                    labelled_samples.rds, encoded_METHOD.rds
+  round-01/ ... round-10/
+    round_RR_split.rds
+    split-70-30/             round_RR_METHOD_fFFF.csv (internal test)
+    models/                  round_RR_METHOD_fFFF.rds and .json
+  summary/split-70-30/       summary tables and figures of the internal test
+  checks/                    reproduction checks of this experiment
+  logs/
+val-2018/                    round 1 also scored on the 24,000 points of 2018
+  inputs/                    labelled_samples.rds, encoded_METHOD.rds,
+                             validation_series_2018.rds, val2018_series.rds,
+                             val2018_encoded_METHOD.rds
+  round-01/
+    round_01_split.rds
+    split-70-30/             internal-test CSVs (kept as a reproduction check)
+    val-2018/                round_01_METHOD_fFFF.csv and *_pred.csv
+    models/                  model .rds and .json
+    comparison.csv
+  summary/split-70-30/       summary of the internal test of round 1
+  summary/val-2018/          summary on the 2018 points
+  checks/
+  logs/
+```
+
+A round folder has `val-2018/` only where the evaluation on the 2018
+points ran, and `models/` only where models were saved. A check folder in `checks/` has
+the layout of an experiment folder.
+
+`analysis/sbsr2027/organize_results.sh` moves the results written before
+this layout (`data/results/learning_curve`, `data/results/validation_2018`,
+the check folders and logs) into it. Without `--apply` it prints the plan:
+the moves, the symbolic links, the links it will re-point because their
+target also moves, the files it does not recognise, which stay where they
+are, and the errors. With `--apply` it writes a sha256 manifest in
+`data/results/sbsr2027`, moves with `mv`, checks every hash at the new
+path, re-points those links as relative links, and prints only failures
+and links that still point to nothing. It never deletes or overwrites a
+regular file. Run
+it from the repository root:
+
+```
+analysis/sbsr2027/organize_results.sh > tmp/organize_plan.txt
+analysis/sbsr2027/organize_results.sh --apply
 ```
 
 ## Server tools
@@ -156,12 +220,14 @@ are not part of the package. `server/memstat.sh` runs next to a
 learning-curve run: every 5 s it samples RAM (`anon` of the cgroup), GPU
 memory and use, CPU cores and read rate of the run's processes, and
 appends the min, max and mean of each 5 min window, with the count of
-finished tasks, as one line to a log. It exits when the run ends. Start it
+finished tasks (files under a folder whose path matches a pattern), as
+one line to a log. It exits when the run ends. Start it
 detached from the repository root, after the run:
 
 ```
-setsid nohup server/memstat.sh --tasks data/results/learning_curve \
-  'ts_tempcnn_f[0-9]{3}[.]csv$' data/results/learning_curve/memstat.log \
+setsid nohup server/memstat.sh --tasks data/results/sbsr2027/split-70-30 \
+  'split-70-30/round-[0-9]+/split-70-30/[^/]*ts_tempcnn_f[0-9]{3}[.]csv$' \
+  data/results/sbsr2027/split-70-30/logs/memstat.log \
   > /dev/null 2>&1 < /dev/null &
 ```
 
@@ -169,7 +235,7 @@ To read the last window as a key-value card, with an end estimate from
 the task rate when the number of tasks of the run is given:
 
 ```
-server/memstat.sh --card --total 80 data/results/learning_curve/memstat.log
+server/memstat.sh --card --total 80 data/results/sbsr2027/split-70-30/logs/memstat.log
 ```
 
 `server/memstat.sh --help` lists the options.

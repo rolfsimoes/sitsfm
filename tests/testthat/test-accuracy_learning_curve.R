@@ -1,4 +1,4 @@
-# Runs analysis/accuracy_learning_curve.R on the MODIS samples of sits
+# Runs analysis/sbsr2027/accuracy_learning_curve.R on the MODIS samples of sits
 # (1218 samples, 4 classes), one round, MLP on the raw time series.
 # Oracle: per-class counts computed by hand with floor(), the rounding of
 # sits_sample(); set properties checked with base R; results of one worker
@@ -10,12 +10,12 @@
 # processes on a GPU (nvidia-smi) is checked only as training = task value.
 # Model reuse needs the sitsfm commit, read from the .git of this checkout;
 # a changed commit is not tested, only a changed sits_md5.
-script <- normalizePath(testthat::test_path("..", "..", "analysis", "accuracy_learning_curve.R"))
+script <- normalizePath(testthat::test_path("..", "..", "analysis", "sbsr2027", "accuracy_learning_curve.R"))
 modis <- tempfile("modis_", fileext = ".rds")
 saveRDS(sits::samples_modis_ndvi, modis)
 new_dir <- function() {
     d <- tempfile("lc_")
-    dir.create(file.path(d, "data", "results", "learning_curve"), recursive = TRUE)
+    dir.create(file.path(d, "data", "results", "sbsr2027", "split-70-30"), recursive = TRUE)
     d
 }
 run <- function(dir, fractions = "0.1,0.5,1", methods = "ts_mlp", workers = "1", rounds = "1",
@@ -55,9 +55,13 @@ threads_by_worker <- function(log, training) {
 }
 # the last lines of a run's log, shown when the run fails
 tail_of <- function(log) paste(utils::tail(log, 30), collapse = "\n")
-results <- function(dir) file.path(dir, "data", "results", "learning_curve")
+# the default experiment folder and the files of round 1 in it
+results <- function(dir) file.path(dir, "data", "results", "sbsr2027", "split-70-30")
+round1 <- function(dir) file.path(results(dir), "round-01")
+split_path <- function(dir) file.path(round1(dir), "round_01_split.rds")
 task_file <- function(dir, method, frac, round = 1) {
-    file.path(results(dir), sprintf("round_%02d_%s_f%03d.csv", round, method, round(frac * 100)))
+    file.path(results(dir), sprintf("round-%02d", round), "split-70-30",
+              sprintf("round_%02d_%s_f%03d.csv", round, method, round(frac * 100)))
 }
 no_seconds <- function(file) {
     d <- read.csv(file)
@@ -70,11 +74,11 @@ count <- function(ids) as.vector(table(factor(labels[ids], levels = sort(unique(
 
 test_that("the script ends and writes the split and one table per fraction", {
     expect_null(attr(log, "status"), info = tail_of(log))
-    expect_true(file.exists(file.path(results(work), "round_01_split.rds")))
+    expect_true(file.exists(split_path(work)))
     for (f in c(0.1, 0.5, 1)) expect_true(file.exists(task_file(work, "ts_mlp", f)))
 })
 
-split <- readRDS(file.path(results(work), "round_01_split.rds"))
+split <- readRDS(split_path(work))
 
 test_that("the split keeps floor(0.7 n) of each class for training", {
     # Cerrado 379, Forest 131, Pasture 344, Soy_Corn 364
@@ -117,7 +121,7 @@ test_that("a fraction gives the same samples and result without the other fracti
     work2 <- new_dir()
     log2 <- run(work2, "0.5,1")
     expect_null(attr(log2, "status"), info = tail_of(log2))
-    split2 <- readRDS(file.path(results(work2), "round_01_split.rds"))
+    split2 <- readRDS(split_path(work2))
     expect_identical(split2$valid, split$valid)
     expect_identical(split2$train[["0.5"]], split$train[["0.5"]])
     for (f in c(0.5, 1)) {
@@ -156,7 +160,8 @@ test_that("a table of the first layout (one per round and method) is reused", {
     work4 <- new_dir()
     first <- do.call(rbind, lapply(c(0.5, 1), function(f) read.csv(task_file(work, "ts_mlp", f))))
     first$value[first$metric == "accuracy"] <- 0.123
-    write.csv(first, file.path(results(work4), "round_01_ts_mlp.csv"), row.names = FALSE)
+    dir.create(file.path(round1(work4), "split-70-30"), recursive = TRUE)
+    write.csv(first, file.path(round1(work4), "split-70-30", "round_01_ts_mlp.csv"), row.names = FALSE)
     log4 <- run(work4, "0.5,1")
     expect_equal(sum(grepl("done, skipped", log4)), 2)
     for (f in c(0.5, 1)) {
@@ -174,7 +179,8 @@ test_that("encoded samples are read from disk once per worker, not per round", {
     work5 <- new_dir()
     enc <- sits::samples_modis_ndvi
     enc[["id"]] <- seq_len(nrow(enc))
-    saveRDS(enc, file.path(results(work5), "encoded_btwins.rds"))
+    dir.create(file.path(results(work5), "inputs"))
+    saveRDS(enc, file.path(results(work5), "inputs", "encoded_btwins.rds"))
     log5 <- run(work5, "0.5,1", "btwins", rounds = "2")
     expect_null(attr(log5, "status"), info = tail_of(log5))
     expect_equal(sum(grepl("encoded btwins: read from", log5)), 1)
@@ -186,7 +192,8 @@ test_that("a saved split is read, not drawn again, and not rewritten", {
     # a size no draw gives (a draw keeps floor(0.7 n) of each class)
     work6 <- new_dir()
     marker <- list(valid = split$valid, train = list("1" = split$train[["1"]][c(TRUE, FALSE)]))
-    file <- file.path(results(work6), "round_01_split.rds")
+    file <- split_path(work6)
+    dir.create(round1(work6))
     saveRDS(marker, file)
     before <- tools::md5sum(file)
     log6 <- run(work6, "1")
@@ -199,7 +206,8 @@ test_that("a saved split is read, not drawn again, and not rewritten", {
 
 test_that("a saved split without a fraction asked for stops the run", {
     work7 <- new_dir()
-    file <- file.path(results(work7), "round_01_split.rds")
+    file <- split_path(work7)
+    dir.create(round1(work7))
     saveRDS(list(valid = split$valid, train = list("1" = split$train[["1"]])), file)
     before <- tools::md5sum(file)
     log7 <- run(work7, "0.5,1")
@@ -213,8 +221,9 @@ test_that("a saved model is read when its metadata match the run, and trained ag
     # the split and models of the first run, without its CSVs; the model of
     # fraction 1 marked as made by other sits files
     work11 <- new_dir()
-    file.copy(file.path(results(work), c("round_01_split.rds", "models")), results(work11), recursive = TRUE)
-    meta_file <- file.path(results(work11), "models", "round_01_ts_mlp_f100.json")
+    dir.create(round1(work11))
+    file.copy(file.path(round1(work), c("round_01_split.rds", "models")), round1(work11), recursive = TRUE)
+    meta_file <- file.path(round1(work11), "models", "round_01_ts_mlp_f100.json")
     meta <- jsonlite::read_json(meta_file)
     expect_setequal(names(meta), c(
         "round", "method", "fraction", "n_train", "train_seconds", "trained_at", "sitsfm_commit",
@@ -233,7 +242,7 @@ test_that("a saved model is read when its metadata match the run, and trained ag
     for (f in c(0.5, 1)) {
         expect_equal(no_seconds(task_file(work11, "ts_mlp", f)), no_seconds(task_file(work, "ts_mlp", f)))
     }
-    first_meta <- jsonlite::read_json(file.path(results(work), "models", "round_01_ts_mlp_f100.json"))
+    first_meta <- jsonlite::read_json(file.path(round1(work), "models", "round_01_ts_mlp_f100.json"))
     expect_equal(jsonlite::read_json(meta_file)$sits_md5, first_meta$sits_md5)
 })
 
@@ -244,15 +253,17 @@ test_that("the results folder argument moves every file the script reads and wri
     # the encoded samples and a STOP file are read from the given folder
     enc <- sits::samples_modis_ndvi
     enc[["id"]] <- seq_len(nrow(enc))
-    saveRDS(enc, file.path(folder, "encoded_btwins.rds"))
+    dir.create(file.path(folder, "inputs"))
+    saveRDS(enc, file.path(folder, "inputs", "encoded_btwins.rds"))
     file.create(file.path(folder, "STOP"))
     expect_false(is.null(attr(run(work8, "1", "btwins", folder = folder), "status")))
     file.remove(file.path(folder, "STOP"))
     log8 <- run(work8, "1", "btwins", folder = folder)
     expect_null(attr(log8, "status"), info = tail_of(log8))
     expect_equal(sum(grepl("encoded btwins: read from", log8)), 1)
-    expect_true(file.exists(file.path(folder, "round_01_split.rds")))
-    expect_true(file.exists(file.path(folder, "round_01_btwins_f100.csv")))
+    expect_true(file.exists(file.path(folder, "round-01", "round_01_split.rds")))
+    expect_true(file.exists(file.path(folder, "round-01", "split-70-30", "round_01_btwins_f100.csv")))
+    expect_true(file.exists(file.path(folder, "round-01", "models", "round_01_btwins_f100.rds")))
     # the default folder stays empty
     expect_length(list.files(results(work8), all.files = TRUE, no.. = TRUE), 0)
 })
@@ -261,19 +272,21 @@ test_that("the results folder argument moves every file the script reads and wri
 # round 1, saved where the script reads the 2018 series
 val2018_dir <- function(split_from, points) {
     d <- new_dir()
-    file.copy(file.path(results(split_from), "round_01_split.rds"), results(d))
-    dir.create(file.path(d, "data", "results", "validation_2018"))
-    saveRDS(points, file.path(d, "data", "results", "validation_2018", "validation_series_2018.rds"))
+    dir.create(round1(d))
+    file.copy(split_path(split_from), round1(d))
+    val_inputs <- file.path(d, "data", "results", "sbsr2027", "val-2018", "inputs")
+    dir.create(val_inputs, recursive = TRUE)
+    saveRDS(points, file.path(val_inputs, "validation_series_2018.rds"))
     d
 }
 val_file <- function(dir, method, frac) {
-    file.path(results(dir), "val2018", basename(task_file(dir, method, frac)))
+    file.path(round1(dir), "val-2018", basename(task_file(dir, method, frac)))
 }
 
 test_that("2018 points equal to the internal test give its metrics, and the internal test is unchanged", {
     # oracle: the internal metrics, computed by sits_accuracy() on the same samples
     work9 <- val2018_dir(work, sits::samples_modis_ndvi[split$valid, ])
-    log9 <- run(work9, "0.5,1", folder = "data/results/learning_curve", val2018 = "all")
+    log9 <- run(work9, "0.5,1", folder = "data/results/sbsr2027/split-70-30", val2018 = "all")
     expect_null(attr(log9, "status"), info = tail_of(log9))
     for (f in c(0.5, 1)) {
         internal <- no_seconds(task_file(work9, "ts_mlp", f))
@@ -288,7 +301,7 @@ test_that("2018 points equal to the internal test give its metrics, and the inte
         expect_equal(v$value[v$metric == "f1"], unname(f1[v$class[v$metric == "f1"]]))
     }
     # a second run skips the tasks whose two files are done
-    log9b <- run(work9, "0.5,1", folder = "data/results/learning_curve", val2018 = "all")
+    log9b <- run(work9, "0.5,1", folder = "data/results/sbsr2027/split-70-30", val2018 = "all")
     expect_equal(sum(grepl("done, skipped", log9b)), 2)
 })
 
@@ -298,7 +311,7 @@ test_that("2018 metrics hold only the classes of the reference, on the points as
     points <- sits::samples_modis_ndvi[split$valid, ]
     points <- points[points$label != "Forest", ]
     work10 <- val2018_dir(work, points)
-    log10 <- run(work10, "1", folder = "data/results/learning_curve", val2018 = "40")
+    log10 <- run(work10, "1", folder = "data/results/sbsr2027/split-70-30", val2018 = "40")
     expect_null(attr(log10, "status"), info = tail_of(log10))
     v <- read.csv(val_file(work10, "ts_mlp", 1))
     expect_equal(unique(v$n_valid), 40)
@@ -307,7 +320,7 @@ test_that("2018 metrics hold only the classes of the reference, on the points as
     expect_true(acc >= 0 && acc <= 1)
     # oracle: the evenly spaced rows of the script, and the share of
     # predictions equal to the label, Forest included
-    p <- read.csv(file.path(results(work10), "val2018", "round_01_ts_mlp_f100_pred.csv"))
+    p <- read.csv(file.path(round1(work10), "val-2018", "round_01_ts_mlp_f100_pred.csv"))
     expect_equal(p$row, unique(round(seq(1, nrow(points), length.out = 40))))
     expect_equal(p$label, unname(points$label[p$row]))
     expect_equal(acc, mean(p$predicted == p$label))

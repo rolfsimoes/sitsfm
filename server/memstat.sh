@@ -13,8 +13,9 @@
 #
 # Usage: server/memstat.sh [options] LOG
 #   --pattern P   pgrep -f pattern of the run's main process
-#                 (default '[-]-file=analysis/accuracy_learning_curve')
-#   --tasks DIR G count the files of DIR matching grep -E G (finished tasks)
+#                 (default '[-]-file=analysis/sbsr2027/accuracy_learning_curve')
+#   --tasks DIR G count the files under DIR, subfolders included, whose
+#                 path matches grep -E G (finished tasks)
 #   --step S      seconds between samples (default 5)
 #   --window W    seconds per line (default 300)
 #   --card        print the last line of LOG as a key-value card and exit
@@ -24,13 +25,14 @@
 #   --version     the version
 #
 # Start it detached, from the repository root, for example:
-#   setsid nohup server/memstat.sh --tasks data/results/learning_curve \
-#     'ae_centre_y_f[0-9]{3}[.]csv$' data/results/learning_curve/memstat.log \
+#   setsid nohup server/memstat.sh --tasks data/results/sbsr2027/split-70-30 \
+#     'split-70-30/round-[0-9]+/split-70-30/[^/]*ae_centre_y_f[0-9]{3}[.]csv$' \
+#     data/results/sbsr2027/split-70-30/logs/memstat.log \
 #     > /dev/null 2>&1 < /dev/null &
 set -uo pipefail
 
-VERSION=0.2.1
-PATTERN='[-]-file=analysis/accuracy_learning_curve'
+VERSION=0.3.0
+PATTERN='[-]-file=analysis/sbsr2027/accuracy_learning_curve'
 TASK_DIR=
 TASK_RE=
 STEP=5
@@ -118,7 +120,8 @@ deltas() {
 }
 tasks() {
     [ -n "$TASK_DIR" ] || { echo NA; return; }
-    ls "$TASK_DIR" 2>/dev/null | grep -cE "$TASK_RE"
+    # the task files are in the round folders of an experiment
+    find "$TASK_DIR" -type f 2>/dev/null | grep -cE "$TASK_RE"
 }
 
 main=$(root) || { echo "memstat.sh: no process matches $PATTERN" >&2; exit 1; }

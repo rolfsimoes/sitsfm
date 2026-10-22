@@ -1,16 +1,27 @@
-# Summary of the learning curve (analysis/accuracy_learning_curve.R):
+# Summary of the learning curve (analysis/sbsr2027/accuracy_learning_curve.R):
 # mean and standard deviation over rounds of each method and fraction, paired
 # differences against the MLP on the raw time series, and two figures.
-# Reads the task files in data/results/learning_curve and writes to
-# data/results/learning_curve/summary. Works on a run in progress:
-# n_rounds says how many rounds each number is computed on.
+# Reads the task files of one evaluation set (round-RR/EVALUATION/) of an
+# experiment folder and writes to its summary/EVALUATION/. Works on a run in
+# progress: n_rounds says how many rounds each number is computed on. With
+# one round the standard deviation and the interval are NA, and the figures
+# have no band and no bars.
 #
-#   Rscript analysis/summary_learning_curve.R
+# Optional arguments: experiment folder (default
+# data/results/sbsr2027/split-70-30) and evaluation set (split-70-30, the
+# default, or val-2018), e.g.
+#   Rscript analysis/sbsr2027/summary_learning_curve.R
+#   Rscript analysis/sbsr2027/summary_learning_curve.R data/results/sbsr2027/val-2018 val-2018
 library(glue)
 library(ggplot2)
 
-results_dir <- "data/results/learning_curve"
-summary_dir <- fs::dir_create(fs::path(results_dir, "summary"))
+args <- commandArgs(trailingOnly = TRUE)
+results_dir <- "data/results/sbsr2027/split-70-30"
+evaluation <- "split-70-30"
+if (length(args) >= 1) results_dir <- args[[1]]
+if (length(args) >= 2) evaluation <- args[[2]]
+stopifnot(evaluation %in% c("split-70-30", "val-2018"))
+summary_dir <- fs::dir_create(fs::path(results_dir, "summary", evaluation))
 
 method_names <- c(
   btwins = "Barlow Twins + MLP",
@@ -29,7 +40,13 @@ names(method_shapes) <- method_names
 #
 # 1. Read the task files
 #
-task_files <- fs::dir_ls(results_dir, regexp = "round_[0-9]+_.*_f[0-9]{3}\\.csv$")
+# only the rounds of this experiment, not those of its checks/
+task_dirs <- fs::path(fs::dir_ls(results_dir, type = "directory", regexp = "/round-[0-9]+$"), evaluation)
+task_dirs <- task_dirs[fs::dir_exists(task_dirs)]
+if (length(task_dirs) == 0) {
+  stop(glue("{results_dir} has no round-RR/{evaluation} folder"))
+}
+task_files <- fs::dir_ls(task_dirs, regexp = "round_[0-9]+_.*_f[0-9]{3}\\.csv$")
 results <- dplyr::bind_rows(purrr::map(task_files, read.csv))
 results <- dplyr::filter(results, .data[["method"]] %in% names(method_names))
 message(glue("{length(task_files)} task files, rounds {paste(sort(unique(results$round)), collapse = ', ')}"))
@@ -114,12 +131,14 @@ theme_curve <- theme_minimal(base_size = 20) +
     plot.background = element_rect(fill = "white", colour = NA)
   )
 
+# one round has no spread: lines and points only
+one_round <- length(unique(results$round)) == 1
 plot_acc <- dplyr::mutate(summary_acc, method = factor(method_names[method], levels = method_names))
 curve <- ggplot(plot_acc, aes(fraction, accuracy_mean, colour = method, fill = method, shape = method)) +
-  geom_ribbon(
+  (if (!one_round) geom_ribbon(
     aes(ymin = accuracy_mean - accuracy_sd, ymax = accuracy_mean + accuracy_sd),
     alpha = 0.15, colour = NA
-  ) +
+  )) +
   geom_line(linewidth = 1) +
   geom_point(size = 3.5) +
   # one tick per fraction of the run; log scale spreads the small fractions
@@ -134,7 +153,7 @@ curve <- ggplot(plot_acc, aes(fraction, accuracy_mean, colour = method, fill = m
   labs(
     x = "Fraction of the training samples (log scale)",
     y = "Overall accuracy",
-    caption = "Mean over rounds; band: one standard deviation."
+    caption = if (one_round) "1 round." else "Mean over rounds; band: one standard deviation."
   ) +
   theme_curve
 ggsave(fs::path(summary_dir, "learning_curve_accuracy.png"), curve,
@@ -147,8 +166,8 @@ plot_diff <- dplyr::mutate(
 diff_plot <- ggplot(plot_diff, aes(fraction, diff_mean, colour = method, shape = method)) +
   geom_hline(yintercept = 0, colour = "grey50", linewidth = 0.4) +
   # dodge in log10 units, so the methods sit side by side at every fraction
-  geom_errorbar(aes(ymin = ci_low, ymax = ci_high), width = 0, linewidth = 1,
-                position = position_dodge(width = 0.06)) +
+  (if (!one_round) geom_errorbar(aes(ymin = ci_low, ymax = ci_high), width = 0, linewidth = 1,
+                                 position = position_dodge(width = 0.06))) +
   geom_point(size = 3.5, position = position_dodge(width = 0.06)) +
   scale_x_log10(
     breaks = sort(unique(plot_diff$fraction)),
@@ -160,7 +179,11 @@ diff_plot <- ggplot(plot_diff, aes(fraction, diff_mean, colour = method, shape =
   labs(
     x = "Fraction of the training samples (log scale)",
     y = "Accuracy minus MLP, time series",
-    caption = "Paired by round; bars: 95% interval of the mean difference."
+    caption = if (one_round) {
+      "1 round."
+    } else {
+      "Paired by round; bars: 95% interval of the mean difference."
+    }
   ) +
   theme_curve
 ggsave(fs::path(summary_dir, "paired_differences.png"), diff_plot,

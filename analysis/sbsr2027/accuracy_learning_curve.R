@@ -8,19 +8,25 @@
 # Each (round, method, fraction) is one task with its own result file
 # (round_RR_METHOD_fFFF.csv); a task whose file is done is skipped, and
 # tasks run in parallel workers.
-# Each task saves its model and metadata in models/ (round_RR_METHOD_fFFF.rds
-# and .json); a later task reads the model if the metadata show the same sits
-# files, the same sitsfm commit and the md5 of the .rds, and trains it again
-# otherwise.
+# Each task saves its model and metadata in models/ of its round
+# (round_RR_METHOD_fFFF.rds and .json); a later task reads the model if the
+# metadata show the same sits files, the same sitsfm commit and the md5 of
+# the .rds, and trains it again otherwise.
+#
+# Layout of the results (experiment) folder:
+#   inputs/                 labelled samples, encoded samples, 2018 points
+#   round-RR/               round_RR_split.rds
+#   round-RR/split-70-30/   task files of the internal test
+#   round-RR/val-2018/      task files and predictions on the 2018 points
+#   round-RR/models/        models and their metadata
 #
 # Optional arguments: rounds, fractions, methods, samples file ("hf": the
 # labelled samples on Hugging Face), workers, results folder, 2018
 # validation points ("none", "all", or a number of them for a check), e.g.
-#   Rscript analysis/accuracy_learning_curve.R 1 0.05,1 btwins,ts_tempcnn hf 2
+#   Rscript analysis/sbsr2027/accuracy_learning_curve.R 1 0.05,1 btwins,ts_tempcnn hf 2
 # The AlphaEarth methods (ae_*) are not in the default methods; name them.
 # With 2018 validation points, each task also classifies them and writes
-# their metrics and predicted classes in the subfolder val2018 of the
-# results folder.
+# their metrics and predicted classes in val-2018/ of its round.
 library(sits)
 library(glue)
 
@@ -30,7 +36,7 @@ fractions <- c(0.05, 0.1, 0.15, 0.20, 0.25, 0.5, 0.75, 1.0)
 methods <- c("btwins", "vicreg", "lejepa", "ts_mlp", "ts_tempcnn")
 samples_file <- "hf"
 n_workers <- 1
-results_folder <- "data/results/learning_curve"
+results_folder <- "data/results/sbsr2027/split-70-30"
 val2018 <- "none"
 if (length(args) >= 1) n_runs <- as.integer(args[[1]])
 if (length(args) >= 2) fractions <- as.numeric(strsplit(args[[2]], ",")[[1]])
@@ -67,6 +73,10 @@ if (torch::cuda_is_available()) {
   batch_size <- 1000 * 1000
 }
 results_dir <- fs::dir_create(results_folder)
+inputs_dir <- fs::dir_create(results_dir / "inputs")
+round_dir <- function(ith_run) {
+  results_dir / glue("round-{sprintf('%02d', ith_run)}")
+}
 # a STOP file in results_dir makes the workers skip the tasks not started;
 # the tasks in progress end and write their files
 stop_file <- results_dir / "STOP"
@@ -79,7 +89,7 @@ if (fs::file_exists(stop_file)) {
 #
 # workers read the samples from disk, so the download is saved once
 if (samples_file == "hf") {
-  samples_file <- results_dir / "labelled_samples.rds"
+  samples_file <- inputs_dir / "labelled_samples.rds"
   if (!fs::file_exists(samples_file)) {
     hf_samples <- sits_from_hf(
       repo = "e-sensing/samples_cerrado",
@@ -139,7 +149,7 @@ encoder_file <- function(model) {
   model_file
 }
 encode_samples <- function(model) {
-  enc_file <- results_dir / glue("encoded_{model}.rds")
+  enc_file <- inputs_dir / glue("encoded_{model}.rds")
   if (fs::file_exists(enc_file)) {
     return(invisible(enc_file))
   }
@@ -173,15 +183,14 @@ for (method in setdiff(methods, c("ts_mlp", "ts_tempcnn"))) {
 # 2b. Optional: the 2018 validation points in the input of each method;
 #     the raw time series methods share one file
 #
-val2018_dir <- results_dir / "val2018"
 val2018_file <- function(method) {
   if (startsWith(method, "ts_")) {
-    return(results_dir / "val2018_series.rds")
+    return(inputs_dir / "val2018_series.rds")
   }
-  results_dir / glue("val2018_encoded_{method}.rds")
+  inputs_dir / glue("val2018_encoded_{method}.rds")
 }
 val2018_task_file <- function(ith_run, method, frac) {
-  val2018_dir / fs::path_file(task_file(ith_run, method, frac))
+  round_dir(ith_run) / "val-2018" / fs::path_file(task_file(ith_run, method, frac))
 }
 encode_val2018 <- function(method) {
   file <- val2018_file(method)
@@ -226,9 +235,8 @@ encode_val2018 <- function(method) {
 }
 val_rows <- NULL
 if (val2018 != "none") {
-  fs::dir_create(val2018_dir)
-  # series of analysis/validation_series_2018.R, rows in the parquet order
-  val_series <- readRDS("data/results/validation_2018/validation_series_2018.rds")
+  # series of analysis/sbsr2027/validation_series_2018.R, rows in the parquet order
+  val_series <- readRDS("data/results/sbsr2027/val-2018/inputs/validation_series_2018.rds")
   val_rows <- seq_len(nrow(val_series))
   if (val2018 != "all") {
     # evenly spaced rows: the file is sorted by class, so every class enters
@@ -244,13 +252,14 @@ if (val2018 != "none") {
 # 3. Split of each round, drawn from the stream of the round
 #
 split_file <- function(ith_run) {
-  results_dir / glue("round_{sprintf('%02d', ith_run)}_split.rds")
+  round_dir(ith_run) / glue("round_{sprintf('%02d', ith_run)}_split.rds")
 }
 for (ith_run in seq_len(n_runs)) {
   # recorded tasks used this split; drawing it again could change it
   if (fs::file_exists(split_file(ith_run))) {
     next
   }
+  fs::dir_create(round_dir(ith_run))
   assign(".Random.seed", round_stream(ith_run), envir = globalenv())
   # oversample = FALSE: the default TRUE draws with replacement
   train_samples <- sits_sample(labelled_samples, frac = 0.7, oversample = FALSE)
@@ -272,7 +281,8 @@ for (ith_run in seq_len(n_runs)) {
 # 4. Tasks: one per round, method and fraction
 #
 task_file <- function(ith_run, method, frac) {
-  results_dir / glue("round_{sprintf('%02d', ith_run)}_{method}_f{sprintf('%03d', round(frac * 100))}.csv")
+  round_dir(ith_run) / "split-70-30" /
+    glue("round_{sprintf('%02d', ith_run)}_{method}_f{sprintf('%03d', round(frac * 100))}.csv")
 }
 # a truncated file is not done: the task runs again
 task_done <- function(file, frac) {
@@ -291,8 +301,8 @@ tasks <- purrr::pmap(tasks, list)
 # tables of the first layout (one per round and method) are split into
 # one table per fraction, so their tasks are not computed again
 for (task in tasks) {
-  first_file <- results_dir / glue("round_{sprintf('%02d', task$ith_run)}_{task$method}.csv")
   file <- task_file(task$ith_run, task$method, task$frac)
+  first_file <- fs::path_dir(file) / glue("round_{sprintf('%02d', task$ith_run)}_{task$method}.csv")
   if (fs::file_exists(first_file) && !fs::file_exists(file)) {
     first <- read.csv(first_file)
     if (any(first[["fraction"]] == task$frac)) {
@@ -320,8 +330,7 @@ for (ith_run in unique(purrr::map_int(tasks, "ith_run"))) {
 #
 # 5. Run one task: train, classify the validation samples, measure
 #
-# saved models and the facts that decide their reuse, computed once here
-models_dir <- fs::dir_create(results_dir / "models")
+# facts that decide the reuse of saved models, computed once here
 sits_files <- c("R/sits.rdb", "libs/sits.so")
 sits_md5 <- as.list(unname(tools::md5sum(file.path(system.file(package = "sits"), sits_files))))
 names(sits_md5) <- sits_files
@@ -332,7 +341,8 @@ git_commit <- function() {
   if (length(script) != 1) {
     return(NA_character_)
   }
-  git_dir <- fs::path(fs::path_dir(fs::path_dir(fs::path_abs(script))), ".git")
+  # the script is in analysis/sbsr2027/ of the checkout
+  git_dir <- fs::path(fs::path_dir(fs::path_dir(fs::path_dir(fs::path_abs(script)))), ".git")
   if (!fs::file_exists(git_dir / "HEAD")) {
     return(NA_character_)
   }
@@ -375,7 +385,7 @@ run_task <- function(task) {
     method_samples <- cached("samples", read_samples)
   } else {
     method_samples <- cached(method, function() {
-      enc_file <- results_dir / glue("encoded_{method}.rds")
+      enc_file <- inputs_dir / glue("encoded_{method}.rds")
       message(glue("encoded {method}: read from {enc_file}"))
       readRDS(enc_file)
     })
@@ -390,6 +400,7 @@ run_task <- function(task) {
     batch_size <- 1000 * 1000
   }
   task_name <- fs::path_ext_remove(fs::path_file(task_file(ith_run, method, frac)))
+  models_dir <- fs::dir_create(round_dir(ith_run) / "models")
   model_file <- models_dir / glue("{task_name}.rds")
   meta_file <- models_dir / glue("{task_name}.json")
   # a saved model is read only if made by these sits files and sitsfm commit
@@ -537,15 +548,17 @@ run_task <- function(task) {
       value = c(acc_val$overall[["Accuracy"]], acc_val$overall[["Kappa"]], f1_val, val_seconds)
     )
     # predicted class of each point; row: its row in validation_data_2018.parquet
-    pred_file <- val2018_dir / glue("{task_name}_pred.csv")
+    val_file <- val2018_task_file(ith_run, method, frac)
+    fs::dir_create(fs::path_dir(val_file))
+    pred_file <- fs::path_dir(val_file) / glue("{task_name}_pred.csv")
     pred_table <- data.frame(row = val_rows, label = ref, predicted = pred)
     write.csv(pred_table, glue("{pred_file}.tmp"), row.names = FALSE)
     fs::file_move(glue("{pred_file}.tmp"), pred_file)
-    val_file <- val2018_task_file(ith_run, method, frac)
     write.csv(val_result, glue("{val_file}.tmp"), row.names = FALSE)
     fs::file_move(glue("{val_file}.tmp"), val_file)
   }
   file <- task_file(ith_run, method, frac)
+  fs::dir_create(fs::path_dir(file))
   write.csv(result, glue("{file}.tmp"), row.names = FALSE)
   fs::file_move(glue("{file}.tmp"), file)
   invisible(file)
@@ -614,11 +627,11 @@ if (n_workers <= 1) {
   })
   parallel::clusterCall(cl, set_threads, n_threads)
   parallel::clusterExport(cl, c(
-    "results_dir", "stop_file", "samples_file", "read_samples", "base_stream",
-    "round_stream", "fraction_stream", "split_file", "task_file",
+    "results_dir", "inputs_dir", "round_dir", "stop_file", "samples_file", "read_samples",
+    "base_stream", "round_stream", "fraction_stream", "split_file", "task_file",
     "worker_cache", "cached", "run_task", "cpu_quota", "n_workers",
-    "gpu_processes", "task_threads", "set_threads", "val2018", "val2018_dir", "val2018_file",
-    "val2018_task_file", "val_rows", "models_dir", "sits_md5", "sitsfm_commit"
+    "gpu_processes", "task_threads", "set_threads", "val2018", "val2018_file",
+    "val2018_task_file", "val_rows", "sits_md5", "sitsfm_commit"
   ))
   invisible(parallel::parLapplyLB(cl, tasks, run_task))
   parallel::stopCluster(cl)

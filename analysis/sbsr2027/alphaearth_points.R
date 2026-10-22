@@ -6,7 +6,7 @@
 # accuracy_learning_curve.R, so the AlphaEarth vectors match its splits.
 # A "2017/2018" sample is labelled with its final year, 2018.
 #
-#   Rscript analysis/alphaearth_points.R
+#   Rscript analysis/sbsr2027/alphaearth_points.R
 library(sits)
 library(glue)
 
@@ -14,7 +14,7 @@ library(glue)
 # 1. Load the samples as accuracy_learning_curve.R does
 #
 # the copy saved by the learning curve is the one its splits come from
-samples_file <- fs::path("data/results/learning_curve/labelled_samples.rds")
+samples_file <- fs::path("data/results/sbsr2027/split-70-30/inputs/labelled_samples.rds")
 if (!fs::file_exists(samples_file)) {
   fs::dir_create(fs::path_dir(samples_file))
   hf_samples <- sits_from_hf(
