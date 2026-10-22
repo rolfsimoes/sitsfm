@@ -8,6 +8,8 @@
 # nor the AlphaEarth and encoder inputs of the 2018 validation points.
 # Without a GPU every task gets the same threads; the share among the
 # processes on a GPU (nvidia-smi) is checked only as training = task value.
+# Model reuse needs the sitsfm commit, read from the .git of this checkout;
+# a changed commit is not tested, only a changed sits_md5.
 script <- normalizePath(testthat::test_path("..", "..", "analysis", "accuracy_learning_curve.R"))
 modis <- tempfile("modis_", fileext = ".rds")
 saveRDS(sits::samples_modis_ndvi, modis)
@@ -207,6 +209,34 @@ test_that("a saved split without a fraction asked for stops the run", {
     expect_false(file.exists(task_file(work7, "ts_mlp", 1)))
 })
 
+test_that("a saved model is read when its metadata match the run, and trained again when not", {
+    # the split and models of the first run, without its CSVs; the model of
+    # fraction 1 marked as made by other sits files
+    work11 <- new_dir()
+    file.copy(file.path(results(work), c("round_01_split.rds", "models")), results(work11), recursive = TRUE)
+    meta_file <- file.path(results(work11), "models", "round_01_ts_mlp_f100.json")
+    meta <- jsonlite::read_json(meta_file)
+    expect_setequal(names(meta), c(
+        "round", "method", "fraction", "n_train", "train_seconds", "trained_at", "sitsfm_commit",
+        "sits_version", "sits_md5", "torch_version", "r_version", "model_md5"
+    ))
+    expect_equal(meta$model_md5, unname(tools::md5sum(sub("json$", "rds", meta_file))))
+    meta$sits_md5[[1]] <- "0"
+    jsonlite::write_json(meta, meta_file, auto_unbox = TRUE, pretty = TRUE, digits = NA)
+    log11 <- run(work11, "0.5,1")
+    expect_null(attr(log11, "status"), info = tail_of(log11))
+    expect_equal(sum(grepl("fraction 0.5: model read from", log11)), 1)
+    expect_equal(sum(grepl("fraction 1: saved model not used \\(sits_md5 differs\\)", log11)), 1)
+    expect_false(any(grepl("fraction 1: model read from", log11)))
+    # the read model and the model trained again on the same stream give
+    # the metrics of the first run
+    for (f in c(0.5, 1)) {
+        expect_equal(no_seconds(task_file(work11, "ts_mlp", f)), no_seconds(task_file(work, "ts_mlp", f)))
+    }
+    first_meta <- jsonlite::read_json(file.path(results(work), "models", "round_01_ts_mlp_f100.json"))
+    expect_equal(jsonlite::read_json(meta_file)$sits_md5, first_meta$sits_md5)
+})
+
 test_that("the results folder argument moves every file the script reads and writes", {
     work8 <- new_dir()
     folder <- file.path(work8, "elsewhere")
@@ -264,7 +294,7 @@ test_that("2018 points equal to the internal test give its metrics, and the inte
 
 test_that("2018 metrics hold only the classes of the reference, on the points asked for", {
     # stand-in without Forest: the model still predicts Forest, which the
-    # metrics count as errors (not checked here: the predictions are not saved)
+    # metrics count as errors
     points <- sits::samples_modis_ndvi[split$valid, ]
     points <- points[points$label != "Forest", ]
     work10 <- val2018_dir(work, points)
@@ -275,4 +305,10 @@ test_that("2018 metrics hold only the classes of the reference, on the points as
     expect_setequal(v$class[v$metric == "f1"], c("Cerrado", "Pasture", "Soy_Corn"))
     acc <- v$value[v$metric == "accuracy"]
     expect_true(acc >= 0 && acc <= 1)
+    # oracle: the evenly spaced rows of the script, and the share of
+    # predictions equal to the label, Forest included
+    p <- read.csv(file.path(results(work10), "val2018", "round_01_ts_mlp_f100_pred.csv"))
+    expect_equal(p$row, unique(round(seq(1, nrow(points), length.out = 40))))
+    expect_equal(p$label, unname(points$label[p$row]))
+    expect_equal(acc, mean(p$predicted == p$label))
 })

@@ -58,7 +58,13 @@ and stops if it lacks a fraction asked for. Each round, method and fraction is o
 with its own CSV (`round_RR_METHOD_fFFF.csv` in
 `data/results/learning_curve`): overall accuracy, kappa, F1 per class and
 run time. A task whose CSV is complete is skipped, so a run can be resumed,
-and tasks run in parallel workers. To stop a run without losing the
+and tasks run in parallel workers. Each task saves its trained model in
+`models/` of the results folder (`round_RR_METHOD_fFFF.rds`) with its
+metadata (`.json`: task, training seconds, date, sitsfm commit, sits and
+torch versions, md5 of the sits files and of the model); a later task reads
+the model instead of training if the md5 of the sits files, the sitsfm
+commit and the md5 of the model match, and trains it again otherwise, with
+the training seconds of the metadata in its run time. To stop a run without losing the
 tasks in progress, create `data/results/learning_curve/STOP`: the workers
 skip the tasks not started; remove the file before the next run. Optional arguments are the number of
 rounds, the fractions, the methods, the samples (`hf`: the labelled
@@ -71,7 +77,9 @@ task also classifies them and writes their metrics in the same format to
 `val2018/` in the results folder: overall accuracy (not weighted; the
 points are not allocated in proportion to area), kappa, F1 of the 8 classes
 of the points, and run time. Predictions of the 3 classes absent from the
-points (Mangrove, Nat_NonVeg, Water) count as errors. The points in the
+points (Mangrove, Nat_NonVeg, Water) count as errors. The predicted class
+of each point goes to `val2018/round_RR_METHOD_fFFF_pred.csv` (`row` in
+`validation_data_2018.parquet`, `label`, `predicted`). The points in the
 input of each method are saved once in the results folder
 (`val2018_series.rds`, `val2018_encoded_METHOD.rds`). Each
 task trains with its share of the CPU quota as torch threads, divided
@@ -171,7 +179,8 @@ server/memstat.sh --card --total 80 data/results/learning_curve/memstat.log
 The test runs the learning curve on the MODIS samples of `sits` and checks
 the split, the nested fractions, the result tables, the skip of finished
 tasks, that two workers give the results of one and train with the torch
-threads of their task, that a saved split is read and not rewritten, and
+threads of their task, that a saved split is read and not rewritten, that
+a saved model is read when its metadata match and trained again when not, and
 that the results folder argument moves every file. From the repository
 root, with temporary files in `tmp/`:
 

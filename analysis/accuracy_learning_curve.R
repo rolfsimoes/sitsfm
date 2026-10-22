@@ -8,6 +8,10 @@
 # Each (round, method, fraction) is one task with its own result file
 # (round_RR_METHOD_fFFF.csv); a task whose file is done is skipped, and
 # tasks run in parallel workers.
+# Each task saves its model and metadata in models/ (round_RR_METHOD_fFFF.rds
+# and .json); a later task reads the model if the metadata show the same sits
+# files, the same sitsfm commit and the md5 of the .rds, and trains it again
+# otherwise.
 #
 # Optional arguments: rounds, fractions, methods, samples file ("hf": the
 # labelled samples on Hugging Face), workers, results folder, 2018
@@ -15,7 +19,8 @@
 #   Rscript analysis/accuracy_learning_curve.R 1 0.05,1 btwins,ts_tempcnn hf 2
 # The AlphaEarth methods (ae_*) are not in the default methods; name them.
 # With 2018 validation points, each task also classifies them and writes
-# their metrics in the subfolder val2018 of the results folder.
+# their metrics and predicted classes in the subfolder val2018 of the
+# results folder.
 library(sits)
 library(glue)
 
@@ -219,6 +224,7 @@ encode_val2018 <- function(method) {
   ))
   invisible(file)
 }
+val_rows <- NULL
 if (val2018 != "none") {
   fs::dir_create(val2018_dir)
   # series of analysis/validation_series_2018.R, rows in the parquet order
@@ -314,6 +320,41 @@ for (ith_run in unique(purrr::map_int(tasks, "ith_run"))) {
 #
 # 5. Run one task: train, classify the validation samples, measure
 #
+# saved models and the facts that decide their reuse, computed once here
+models_dir <- fs::dir_create(results_dir / "models")
+sits_files <- c("R/sits.rdb", "libs/sits.so")
+sits_md5 <- as.list(unname(tools::md5sum(file.path(system.file(package = "sits"), sits_files))))
+names(sits_md5) <- sits_files
+# commit of the sitsfm checkout that holds this script, read from .git
+# without git; NA if not found
+git_commit <- function() {
+  script <- sub("^--file=", "", grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE))
+  if (length(script) != 1) {
+    return(NA_character_)
+  }
+  git_dir <- fs::path(fs::path_dir(fs::path_dir(fs::path_abs(script))), ".git")
+  if (!fs::file_exists(git_dir / "HEAD")) {
+    return(NA_character_)
+  }
+  head <- readLines(git_dir / "HEAD", n = 1)
+  # a detached HEAD holds the commit itself
+  if (!startsWith(head, "ref: ")) {
+    return(head)
+  }
+  ref <- sub("^ref: ", "", head)
+  if (fs::file_exists(git_dir / ref)) {
+    return(readLines(git_dir / ref, n = 1))
+  }
+  if (fs::file_exists(git_dir / "packed-refs")) {
+    packed <- readLines(git_dir / "packed-refs")
+    line <- packed[endsWith(packed, paste0(" ", ref))]
+    if (length(line) == 1) {
+      return(sub(" .*", "", line))
+    }
+  }
+  NA_character_
+}
+sitsfm_commit <- git_commit()
 # data read from disk once per worker
 worker_cache <- new.env()
 cached <- function(key, read) {
@@ -348,6 +389,31 @@ run_task <- function(task) {
   if (torch::cuda_is_available()) {
     batch_size <- 1000 * 1000
   }
+  task_name <- fs::path_ext_remove(fs::path_file(task_file(ith_run, method, frac)))
+  model_file <- models_dir / glue("{task_name}.rds")
+  meta_file <- models_dir / glue("{task_name}.json")
+  # a saved model is read only if made by these sits files and sitsfm commit
+  reuse <- FALSE
+  stale <- character(0)
+  if (fs::file_exists(model_file) && fs::file_exists(meta_file)) {
+    meta <- jsonlite::read_json(meta_file)
+    differs <- c(
+      "sits_md5 differs" = !identical(unlist(meta$sits_md5), unlist(sits_md5)),
+      "sitsfm_commit differs or is unknown" =
+        is.na(sitsfm_commit) || !identical(meta$sitsfm_commit, sitsfm_commit),
+      "model_md5 differs" = !identical(meta$model_md5, unname(tools::md5sum(model_file)))
+    )
+    stale <- names(differs)[differs]
+    reuse <- length(stale) == 0
+  } else if (fs::file_exists(model_file) || fs::file_exists(meta_file)) {
+    stale <- "its .rds or .json is missing"
+  }
+  if (length(stale) > 0) {
+    message(glue(
+      "round {ith_run} {method} fraction {frac}: saved model not used ",
+      "({toString(stale)}), trained again"
+    ))
+  }
   start_time <- Sys.time()
   # seed = NULL: sits draws the torch seed from the R stream, which
   # also draws the early stopping split
@@ -367,11 +433,41 @@ run_task <- function(task) {
   # sits_train() sets its threads only during the training (whole quota
   # by default); the classification runs on the CPU with the worker's
   set_threads(threads, quiet = TRUE)
-  ml_model <- sits_train(samples = samples_red, ml_method = ml_method, threads = threads)
-  train_seconds <- as.numeric(difftime(Sys.time(), start_time, units = "secs"))
+  # reading a model draws nothing; each task sets its own seed above
+  if (reuse) {
+    ml_model <- readRDS(model_file)
+    train_seconds <- meta$train_seconds
+    message(glue("round {ith_run} {method} fraction {frac}: model read from {model_file}"))
+  } else {
+    ml_model <- sits_train(samples = samples_red, ml_method = ml_method, threads = threads)
+    train_seconds <- as.numeric(difftime(Sys.time(), start_time, units = "secs"))
+    saveRDS(ml_model, glue("{model_file}.tmp"))
+    meta <- list(
+      round = ith_run,
+      method = method,
+      fraction = frac,
+      n_train = nrow(samples_red),
+      train_seconds = train_seconds,
+      trained_at = format(Sys.time(), "%Y-%m-%dT%H:%M:%SZ", tz = "UTC"),
+      sitsfm_commit = sitsfm_commit,
+      sits_version = as.character(utils::packageVersion("sits")),
+      sits_md5 = sits_md5,
+      torch_version = as.character(utils::packageVersion("torch")),
+      r_version = as.character(getRversion()),
+      model_md5 = unname(tools::md5sum(glue("{model_file}.tmp")))
+    )
+    jsonlite::write_json(
+      meta, glue("{meta_file}.tmp"),
+      auto_unbox = TRUE, pretty = TRUE, digits = NA, na = "null"
+    )
+    # an .rds renamed without its new .json fails the model_md5 check
+    fs::file_move(glue("{model_file}.tmp"), model_file)
+    fs::file_move(glue("{meta_file}.tmp"), meta_file)
+  }
   if (torch::cuda_is_available()) {
     assign("on_gpu", TRUE, envir = worker_cache)
   }
+  class_start <- Sys.time()
   class_pts <- sits_classify(
     data = validation_samples,
     ml_model = ml_model,
@@ -380,7 +476,8 @@ run_task <- function(task) {
     batch_size = batch_size,
     progress = FALSE
   )
-  seconds <- as.numeric(difftime(Sys.time(), start_time, units = "secs"))
+  # seconds: training (from the metadata of a read model) and classification
+  seconds <- train_seconds + as.numeric(difftime(Sys.time(), class_start, units = "secs"))
   #
   # Measure accuracy
   #
@@ -439,6 +536,11 @@ run_task <- function(task) {
       class = c(NA, NA, sort(unique(ref)), NA),
       value = c(acc_val$overall[["Accuracy"]], acc_val$overall[["Kappa"]], f1_val, val_seconds)
     )
+    # predicted class of each point; row: its row in validation_data_2018.parquet
+    pred_file <- val2018_dir / glue("{task_name}_pred.csv")
+    pred_table <- data.frame(row = val_rows, label = ref, predicted = pred)
+    write.csv(pred_table, glue("{pred_file}.tmp"), row.names = FALSE)
+    fs::file_move(glue("{pred_file}.tmp"), pred_file)
     val_file <- val2018_task_file(ith_run, method, frac)
     write.csv(val_result, glue("{val_file}.tmp"), row.names = FALSE)
     fs::file_move(glue("{val_file}.tmp"), val_file)
@@ -516,7 +618,7 @@ if (n_workers <= 1) {
     "round_stream", "fraction_stream", "split_file", "task_file",
     "worker_cache", "cached", "run_task", "cpu_quota", "n_workers",
     "gpu_processes", "task_threads", "set_threads", "val2018", "val2018_dir", "val2018_file",
-    "val2018_task_file"
+    "val2018_task_file", "val_rows", "models_dir", "sits_md5", "sitsfm_commit"
   ))
   invisible(parallel::parLapplyLB(cl, tasks, run_task))
   parallel::stopCluster(cl)
