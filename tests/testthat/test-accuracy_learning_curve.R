@@ -1,4 +1,5 @@
-# Runs analysis/sbsr2027/accuracy_learning_curve.R on the MODIS samples of sits
+# Runs analysis/sbsr2027/make_splits.R random, then
+# analysis/sbsr2027/accuracy_learning_curve.R, on the MODIS samples of sits
 # (1218 samples, 4 classes), one round, MLP on the raw time series.
 # Oracle: per-class counts computed by hand with floor(), the rounding of
 # sits_sample(); set properties checked with base R; results of one worker
@@ -11,17 +12,29 @@
 # Model reuse needs the sitsfm commit, read from the .git of this checkout;
 # a changed commit is not tested, only a changed sits_md5.
 script <- normalizePath(testthat::test_path("..", "..", "analysis", "sbsr2027", "accuracy_learning_curve.R"))
+make_splits <- normalizePath(testthat::test_path("..", "..", "analysis", "sbsr2027", "make_splits.R"))
 modis <- tempfile("modis_", fileext = ".rds")
 saveRDS(sits::samples_modis_ndvi, modis)
+# make_splits.R reads the samples from the inputs of the default folder
 new_dir <- function() {
     d <- tempfile("lc_")
-    dir.create(file.path(d, "data", "results", "sbsr2027", "split-70-30"), recursive = TRUE)
+    dir.create(file.path(d, "data", "results", "sbsr2027", "split-70-30", "inputs"), recursive = TRUE)
+    file.copy(modis, file.path(d, "data", "results", "sbsr2027", "split-70-30", "inputs", "labelled_samples.rds"))
     d
 }
+# the splits first (an existing split is kept), then the experiment
 run <- function(dir, fractions = "0.1,0.5,1", methods = "ts_mlp", workers = "1", rounds = "1",
                 folder = NULL, env = character(), val2018 = NULL) {
     old <- setwd(dir)
     on.exit(setwd(old))
+    split_folder <- if (is.null(folder)) "data/results/sbsr2027/split-70-30" else folder
+    split_log <- suppressWarnings(system2(
+        "Rscript", c(make_splits, "random", split_folder, rounds, fractions),
+        stdout = TRUE, stderr = TRUE
+    ))
+    if (!is.null(attr(split_log, "status"))) {
+        return(split_log)
+    }
     suppressWarnings(system2(
         "Rscript", c(script, rounds, fractions, methods, modis, workers, folder, val2018),
         stdout = TRUE, stderr = TRUE, env = env
@@ -179,7 +192,6 @@ test_that("encoded samples are read from disk once per worker, not per round", {
     work5 <- new_dir()
     enc <- sits::samples_modis_ndvi
     enc[["id"]] <- seq_len(nrow(enc))
-    dir.create(file.path(results(work5), "inputs"))
     saveRDS(enc, file.path(results(work5), "inputs", "encoded_btwins.rds"))
     log5 <- run(work5, "0.5,1", "btwins", rounds = "2")
     expect_null(attr(log5, "status"), info = tail_of(log5))
@@ -264,8 +276,8 @@ test_that("the results folder argument moves every file the script reads and wri
     expect_true(file.exists(file.path(folder, "round-01", "round_01_split.rds")))
     expect_true(file.exists(file.path(folder, "round-01", "split-70-30", "round_01_btwins_f100.csv")))
     expect_true(file.exists(file.path(folder, "round-01", "models", "round_01_btwins_f100.rds")))
-    # the default folder stays empty
-    expect_length(list.files(results(work8), all.files = TRUE, no.. = TRUE), 0)
+    # the default folder holds only the samples that make_splits.R reads
+    expect_equal(list.files(results(work8), all.files = TRUE, recursive = TRUE), "inputs/labelled_samples.rds")
 })
 
 # stand-in for the 2018 validation points: samples of the internal test of

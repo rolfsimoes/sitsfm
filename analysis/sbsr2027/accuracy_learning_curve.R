@@ -1,9 +1,9 @@
 # Paired learning curve: accuracy of encoders + MLP, of AlphaEarth
 # embeddings + MLP and of MLP and TempCNN on the raw time series, by
 # fraction of the training samples.
-# Each round draws a new split of the labelled samples (70% train, 30%
-# validation); all methods of a round use the same split and the same
-# nested fractions. A split saved by an earlier run is read, not drawn again.
+# Each round reads its split of the labelled samples (round_RR_split.rds,
+# written by make_splits.R); all methods of a round use the same split and
+# the same nested fractions.
 #
 # Each (round, method, fraction) is one task with its own result file
 # (round_RR_METHOD_fFFF.csv); a task whose file is done is skipped, and
@@ -15,7 +15,7 @@
 #
 # Layout of the results (experiment) folder:
 #   inputs/                 labelled samples, encoded samples, 2018 points
-#   round-RR/               round_RR_split.rds
+#   round-RR/               round_RR_split.rds (from make_splits.R)
 #   round-RR/split-70-30/   task files of the internal test
 #   round-RR/val-2018/      task files and predictions on the 2018 points
 #   round-RR/models/        models and their metadata
@@ -49,24 +49,11 @@ stopifnot(val2018 %in% c("none", "all") || grepl("^[0-9]+$", val2018))
 # each fraction has its own random substream, numbered 100 * fraction
 stopifnot(abs(fractions * 100 - round(fractions * 100)) < 1e-9)
 
-#
-# Random streams: L'Ecuyer-CMRG gives streams that do not overlap.
-# Round r uses stream r for its split; the training of fraction f uses
-# substream 100 * f of stream r, the same for all methods. A training
-# depends only on its round and fraction, not on what ran before.
-#
-RNGkind("L'Ecuyer-CMRG")
-set.seed(1524)
-base_stream <- .Random.seed
-round_stream <- function(ith_run) {
-  stream <- base_stream
-  for (i in seq_len(ith_run)) stream <- parallel::nextRNGStream(stream)
-  stream
-}
-fraction_stream <- function(stream, frac) {
-  for (i in seq_len(round(frac * 100))) stream <- parallel::nextRNGSubStream(stream)
-  stream
-}
+# Random streams (base_stream, round_stream, fraction_stream): the training
+# of fraction f in round r uses substream 100 * f of stream r; streams.R
+# sits next to this script
+script_file <- sub("^--file=", "", grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE))
+source(fs::path(fs::path_dir(script_file), "streams.R"))
 
 batch_size <- NULL
 if (torch::cuda_is_available()) {
@@ -249,32 +236,15 @@ if (val2018 != "none") {
 }
 
 #
-# 3. Split of each round, drawn from the stream of the round
+# 3. Split of each round, written by make_splits.R
 #
 split_file <- function(ith_run) {
   round_dir(ith_run) / glue("round_{sprintf('%02d', ith_run)}_split.rds")
 }
 for (ith_run in seq_len(n_runs)) {
-  # recorded tasks used this split; drawing it again could change it
-  if (fs::file_exists(split_file(ith_run))) {
-    next
+  if (!fs::file_exists(split_file(ith_run))) {
+    stop(glue("{split_file(ith_run)} is missing; write it with analysis/sbsr2027/make_splits.R"))
   }
-  fs::dir_create(round_dir(ith_run))
-  assign(".Random.seed", round_stream(ith_run), envir = globalenv())
-  # oversample = FALSE: the default TRUE draws with replacement
-  train_samples <- sits_sample(labelled_samples, frac = 0.7, oversample = FALSE)
-  validation_ids <- setdiff(labelled_samples[["id"]], train_samples[["id"]])
-  #
-  # Nested fractions: shuffle each class once; fraction f takes the first
-  # floor(f n) samples of each class, whatever the other fractions are
-  #
-  train_order <- sits_sample(train_samples, frac = 1.0, oversample = FALSE)
-  train_ids <- purrr::map(fractions, function(frac) {
-    dplyr::slice_head(dplyr::group_by(train_order, .data[["label"]]), prop = frac)[["id"]]
-  })
-  names(train_ids) <- as.character(fractions)
-  saveRDS(list(valid = validation_ids, train = train_ids), glue("{split_file(ith_run)}.tmp"))
-  fs::file_move(glue("{split_file(ith_run)}.tmp"), split_file(ith_run))
 }
 
 #
@@ -318,12 +288,12 @@ for (task in tasks[done]) {
   message(glue("round {task$ith_run} {task$method} fraction {task$frac}: done, skipped"))
 }
 tasks <- tasks[!done]
-# a split read from disk holds only the fractions of the run that drew it
+# a split holds only the fractions make_splits.R was given
 for (ith_run in unique(purrr::map_int(tasks, "ith_run"))) {
   run_fracs <- purrr::map_dbl(purrr::keep(tasks, function(task) task$ith_run == ith_run), "frac")
   missing <- setdiff(as.character(run_fracs), names(readRDS(split_file(ith_run))$train))
   if (length(missing) > 0) {
-    stop(glue("{split_file(ith_run)} has no fraction {toString(missing)}; remove it to draw it again"))
+    stop(glue("{split_file(ith_run)} has no fraction {toString(missing)}; see make_splits.R"))
   }
 }
 

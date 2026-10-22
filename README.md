@@ -9,7 +9,7 @@ This package contains scripts for running foundational models using the `sits` p
 
 The scripts can be found in the `analysis` directory. All data necessary 
 to run them in on Hugging Face. The results of each step are also available
-in Hugging Face. The scripts of the SBSR 2027 experiments (steps 7 to 10
+in Hugging Face. The scripts of the SBSR 2027 experiments (steps 7 to 11
 and the AlphaEarth scripts) are in `analysis/sbsr2027` and write their
 results in `data/results/sbsr2027` (see "Results of the SBSR 2027
 experiments" below).
@@ -45,7 +45,45 @@ step 4 to measure the accuracy of the classification of the Alpha Earth
 embeddings for year 2018. This classification has been done using the
 same set of labelled samples used in step 5. 
 
-7. `sbsr2027/accuracy_learning_curve.R`: measures which method reaches a given
+7. `sbsr2027/make_splits.R`: draws the train/test split of each round of
+an experiment and the nested training fractions, and writes them to
+`round-RR/round_RR_split.rds` in the experiment folder; step 8 reads them
+and draws nothing. The split of round r comes from random stream r (seed
+1524), so the same arguments give the same splits, and an existing split
+file is never overwritten. The geometry decides what may not be on both
+sides:
+
+   - `random`: 30% of the samples of each class for test, 70% for
+     training; these are the recorded splits of `split-70-30`;
+   - `location`: 30% of the locations (unique coordinates), stratified by
+     the label of the earliest sample of each location; all samples of a
+     location are on one side;
+   - `block`: square blocks of a given size in degrees, in random order,
+     until the test side holds at least 30% of the samples;
+   - `year`: round r tests the r-th label year (2018, 2020, 2022, 2024)
+     and trains on the other years. The same locations recur in the other
+     years, so this measures transfer in time, not spatial independence.
+
+   The training fractions are nested: each class of the training side is
+shuffled once, and fraction f takes the first floor(f n) of each class.
+Besides the ids, the split file holds the geometry and its counts (test
+year, blocks on each side, test samples per class, test and training
+sizes); the script prints them, one line per round. It reads the labelled
+samples from `data/results/sbsr2027/split-70-30/inputs/` and links every
+file of that folder, with relative links, into `inputs/` of the
+experiment folder, so step 8 runs there with the same samples and
+encoded samples. Optional arguments are the geometry (default `random`),
+the experiment folder (default `data/results/sbsr2027/split-GEOMETRY`,
+but `split-70-30` for `random`), the number of rounds (default 10; for
+`year` at most the number of years), the fractions and the block size
+(default 1 degree):
+
+```
+Rscript analysis/sbsr2027/make_splits.R
+Rscript analysis/sbsr2027/make_splits.R block data/results/sbsr2027/split-block 10
+```
+
+8. `sbsr2027/accuracy_learning_curve.R`: measures which method reaches a given
 accuracy with fewer training samples. It compares the LeJEPA, VICReg and
 Barlow Twins encoders, frozen, each with an MLP trained on its embeddings,
 against an MLP and a TempCNN trained on the raw time series. The method
@@ -53,11 +91,9 @@ against an MLP and a TempCNN trained on the raw time series. The method
 the 10 m pixel that contains each sample, in the label year, read from the
 Hugging Face dataset named by `ae_repo` in the script. It is not in the
 default methods, so it runs only when named. Each round
-draws a new split of the labelled samples, 30% of each class for
-validation and 70% for training, and trains every method on the same
-nested fractions of the 70%. The split of each round is saved
-(`round_RR_split.rds`); a later run reads it and does not draw it again,
-and stops if it lacks a fraction asked for. Each round, method and fraction is one task
+reads its split from step 7 (`round_RR_split.rds`) and trains every
+method on the same nested fractions of the training side; the run stops
+if a split file is missing or lacks a fraction asked for. Each round, method and fraction is one task
 with its own CSV (`round-RR/split-70-30/round_RR_METHOD_fFFF.csv` in the
 results folder): overall accuracy, kappa, F1 per class and
 run time. A task whose CSV is complete is skipped, so a run can be resumed,
@@ -73,8 +109,8 @@ skip the tasks not started; remove the file before the next run. Optional argume
 rounds, the fractions, the methods, the samples (`hf`: the labelled
 samples on Hugging Face), the number of workers and the results folder
 (default `data/results/sbsr2027/split-70-30`; the samples, splits, encoded
-samples, task CSVs, models and STOP file are all read and written there), and the
-2018 validation points of step 10 (`none`, the default; `all`; or a number
+samples, task CSVs, models and STOP file are all there), and the
+2018 validation points of step 11 (`none`, the default; `all`; or a number
 of evenly spaced points, for a check). With 2018 validation points, each
 task also classifies them and writes their metrics in the same format to
 `round-RR/val-2018/` in the results folder: overall accuracy (not weighted; the
@@ -94,7 +130,7 @@ in 4 workers:
 Rscript analysis/sbsr2027/accuracy_learning_curve.R 1 0.05,1 btwins,ts_tempcnn hf 4
 ```
 
-8. `sbsr2027/summary_learning_curve.R`: reads the result files of step 7
+9. `sbsr2027/summary_learning_curve.R`: reads the result files of step 8
 for one evaluation set (`round-RR/split-70-30/`, the internal test, or
 `round-RR/val-2018/`, the 2018 points) of an experiment folder (default
 `data/results/sbsr2027/split-70-30`) and writes, in its
@@ -113,7 +149,7 @@ Rscript analysis/sbsr2027/summary_learning_curve.R
 Rscript analysis/sbsr2027/summary_learning_curve.R data/results/sbsr2027/val-2018 val-2018
 ```
 
-9. `sbsr2027/check_learning_curve.R`: reruns 16 recorded tasks of step 7 (rounds
+10. `sbsr2027/check_learning_curve.R`: reruns 16 recorded tasks of step 8 (rounds
 1 and 2, fractions 5% and 10%, the three encoders and the MLP on the raw
 time series, 8 workers) in `data/results/sbsr2027/split-70-30/checks/rerun`,
 an experiment folder that links the labelled samples and encoded samples
@@ -125,7 +161,7 @@ difference and the median time ratio; it exits with status 1 if a task
 is missing. It writes nothing in the recorded folder and
 refuses to run while results of an earlier check are in its folder.
 Optional arguments are the number of rounds, the fractions, the methods,
-the check folder and the 2018 validation points of step 7; the second line
+the check folder and the 2018 validation points of step 8; the second line
 reruns the two recorded TempCNN tasks of round 1 at 5% and 10%:
 
 ```
@@ -147,7 +183,7 @@ setsid nohup env OPENBLAS_NUM_THREADS=1 Rscript analysis/sbsr2027/check_learning
 setsid nohup env OPENBLAS_NUM_THREADS=1 Rscript analysis/sbsr2027/check_learning_curve.R 1 0.05,0.1,0.15,0.2,0.25,0.5,0.75,1 btwins,vicreg,lejepa,ts_mlp,ts_tempcnn,ae_centre_y data/results/sbsr2027/val-2018 all > data/results/sbsr2027/val-2018/logs/run.log 2>&1 < /dev/null &
 ```
 
-10. `sbsr2027/validation_series_2018.R`: reads the Landsat time series of the 24,000
+11. `sbsr2027/validation_series_2018.R`: reads the Landsat time series of the 24,000
 validation points of 2018 from the monthly Landsat cubes of 2017 and 2018
 on the server (the cubes of the labelled samples), with their 24 dates and
 10 bands, into `data/results/sbsr2027/val-2018/inputs/validation_series_2018.rds`.
@@ -164,7 +200,7 @@ Rscript analysis/sbsr2027/validation_series_2018.R all ~/rascunho-gpu/biomasbr-s
 ## Results of the SBSR 2027 experiments
 
 Each experiment has its own folder in `data/results/sbsr2027`, and each
-round folder has the same structure in both experiments:
+round folder has the same structure in every experiment:
 
 ```
 split-70-30/                 the 10-round experiment
@@ -189,6 +225,11 @@ val-2018/                    round 1 also scored on the 24,000 points of 2018
   summary/split-70-30/       summary of the internal test of round 1
   summary/val-2018/          summary on the 2018 points
   checks/
+  logs/
+split-GEOMETRY/              location, block or year splits (step 7)
+  inputs/                    links to the files of split-70-30/inputs/
+  round-RR/                  as in split-70-30
+  summary/
   logs/
 ```
 
@@ -242,7 +283,14 @@ server/memstat.sh --card --total 80 data/results/sbsr2027/split-70-30/logs/memst
 
 ## Tests
 
-The test runs the learning curve on the MODIS samples of `sits` and checks
+`test-make_splits.R` draws the splits of every geometry on the MODIS
+samples of `sits`, with four label years, and checks that `random` gives
+the splits of the code it replaced, that no location, block or year is on
+both sides, that the fractions are nested and never touch the test side,
+that an existing split is kept, and that the experiment script stops
+without its split. It trains nothing. `test-accuracy_learning_curve.R`
+makes the `random` splits, then runs the learning curve on the MODIS
+samples of `sits`, and checks
 the split, the nested fractions, the result tables, the skip of finished
 tasks, that two workers give the results of one and train with the torch
 threads of their task, that a saved split is read and not rewritten, that
@@ -252,5 +300,6 @@ root, with temporary files in `tmp/`:
 
 ```
 mkdir -p tmp
+TMPDIR="$PWD/tmp" Rscript -e 'testthat::test_file("tests/testthat/test-make_splits.R")'
 TMPDIR="$PWD/tmp" Rscript -e 'testthat::test_file("tests/testthat/test-accuracy_learning_curve.R")'
 ```
