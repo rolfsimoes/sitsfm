@@ -24,8 +24,8 @@
 # labelled samples on Hugging Face), workers, results folder, 2018
 # validation points ("none", "all", or a number of them for a check), e.g.
 #   Rscript analysis/sbsr2027/accuracy_learning_curve.R 1 0.05,1 btwins,ts_tempcnn hf 2
-# The AlphaEarth (ae_*) and TESSERA (tessera_*) methods are not in the
-# default methods; name them.
+# The AlphaEarth (ae_*) and TESSERA (tessera_*) methods and the 6-band
+# methods (ts_mlp6, ts_tempcnn6) are not in the default methods; name them.
 # With 2018 validation points, each task also classifies them and writes
 # their metrics and predicted classes in val-2018/ of its round.
 library(sits)
@@ -95,6 +95,10 @@ read_samples <- function() {
   samples
 }
 labelled_samples <- read_samples()
+# the encoders were pre-trained on the 6 reflectance bands only, so
+# ts_mlp6 and ts_tempcnn6 train the raw time series methods on the same bands
+bands6 <- c("BLUE", "GREEN", "RED", "NIR08", "SWIR16", "SWIR22")
+bands6_methods <- c("ts_mlp6", "ts_tempcnn6")
 
 #
 # 2. Encode all samples once per encoder; the encoder is frozen,
@@ -181,7 +185,7 @@ encode_samples <- function(model) {
   fs::file_move(glue("{enc_file}.tmp"), enc_file)
   invisible(enc_file)
 }
-for (method in setdiff(methods, c("ts_mlp", "ts_tempcnn"))) {
+for (method in methods[!startsWith(methods, "ts_")]) {
   encode_samples(method)
 }
 
@@ -374,7 +378,9 @@ run_task <- function(task) {
     message(glue("round {ith_run} {method} fraction {frac}: stop file, skipped"))
     return(invisible(NULL))
   }
-  if (startsWith(method, "ts_")) {
+  if (method %in% bands6_methods) {
+    method_samples <- cached("samples6", function() sits_select(read_samples(), bands = bands6))
+  } else if (startsWith(method, "ts_")) {
     method_samples <- cached("samples", read_samples)
   } else {
     method_samples <- cached(method, function() {
@@ -422,7 +428,7 @@ run_task <- function(task) {
   # seed = NULL: sits draws the torch seed from the R stream, which
   # also draws the early stopping split
   assign(".Random.seed", fraction_stream(round_stream(ith_run), frac), envir = globalenv())
-  if (method == "ts_tempcnn") {
+  if (method %in% c("ts_tempcnn", "ts_tempcnn6")) {
     ml_method <- sits_tempcnn()
   } else {
     ml_method <- sits_mlp(
@@ -507,6 +513,10 @@ run_task <- function(task) {
   if (val2018 != "none") {
     val_start <- Sys.time()
     val_samples <- cached(as.character(val2018_file(method)), function() readRDS(val2018_file(method)))
+    # the 6-band models classify the same series reduced to their bands
+    if (method %in% bands6_methods) {
+      val_samples <- sits_select(val_samples, bands = bands6)
+    }
     class_val <- sits_classify(
       data = val_samples,
       ml_model = ml_model,
@@ -625,7 +635,8 @@ if (n_workers <= 1) {
     "base_stream", "round_stream", "fraction_stream", "split_file", "task_file",
     "worker_cache", "cached", "run_task", "cpu_quota", "n_workers",
     "gpu_processes", "task_threads", "set_threads", "val2018", "val2018_file",
-    "val2018_task_file", "val_rows", "sits_md5", "sitsfm_commit", "progress_files"
+    "val2018_task_file", "val_rows", "sits_md5", "sitsfm_commit", "progress_files",
+    "bands6", "bands6_methods"
   ))
   invisible(parallel::parLapplyLB(cl, tasks, run_task))
   parallel::stopCluster(cl)

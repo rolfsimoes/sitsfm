@@ -92,7 +92,12 @@ the 10 m pixel that contains each sample, in the label year, read from the
 Hugging Face dataset named by `ae_repo` in the script. The methods
 `tessera_y` and `tessera_unit_y` train it on TESSERA embeddings (step 12)
 of the label year, read from the dataset named by `tessera_repo`: the
-vector as read, and the vector divided by its L2 norm. These methods are
+vector as read, and the vector divided by its L2 norm. The methods
+`ts_mlp6` and `ts_tempcnn6` are `ts_mlp` and `ts_tempcnn` trained on the
+6 reflectance bands (BLUE, GREEN, RED, NIR08, SWIR16, SWIR22) instead of
+the 10 bands of the labelled samples: the encoders were pre-trained on
+these 6 bands, and `sits_encode()` selects them. The same 6 bands are
+selected in the test samples and the 2018 points. These methods are
 not in the default methods, so they run only when named. Each round
 reads its split from step 7 (`round_RR_split.rds`) and trains every
 method on the same nested fractions of the training side; the run stops
@@ -139,9 +144,19 @@ Rscript call; that of `run_summary.sh` counts the summaries.
 The GPU jobs are started one script after the other, each after the
 job before it ends; `run_tessera.sh` runs on the CPU, beside them:
 
-1. `run_split_year.sh`: the held-out label years (`split-year`, 4
+1. `run_bands_check.sh`: runs first, because it decides whether the
+   comparison of the encoders with the raw time series is fair. It
+   prints the bands of the three cached encoders
+   (`encoder_bands.R`, which downloads nothing and exits 1 unless each
+   has the 6 reflectance bands), then runs `ts_mlp6` and `ts_tempcnn6`
+   on round 1 of `split-70-30` at 5% and 100% (internal test only, 4
+   tasks), beside the tasks already there. Its accuracies, against
+   those of `ts_mlp` and `ts_tempcnn` in the same round and fractions,
+   decide whether the raw time series methods of every experiment must
+   run again on the 6 bands. Step 9 leaves these two methods out.
+2. `run_split_year.sh`: the held-out label years (`split-year`, 4
    rounds), the six methods before TESSERA.
-2. `run_tessera.sh`: the TESSERA queue, `tessera_y` then
+3. `run_tessera.sh`: the TESSERA queue, `tessera_y` then
    `tessera_unit_y` in each folder: `split-70-30` (10 rounds, internal
    test only), then `val-2018` (round 1), `split-year` (4 rounds),
    `split-location` and `split-block` (round 1), scored also on the 2018
@@ -151,11 +166,11 @@ job before it ends; `run_tessera.sh` runs on the CPU, beside them:
    on the CPU. Its budget beside a GPU job of up to 80 GiB is 150 GiB of RAM
    (the cgroup has 316 GiB, and tether stops the jobs at 95%). The
    argument is the number of workers (default 2).
-3. `run_val2018.sh`: rounds 1 to 10 of `val-2018`, all eight methods.
-4. `run_split_location.sh` and `run_split_block.sh`: rounds 1 to 10 of
+4. `run_val2018.sh`: rounds 1 to 10 of `val-2018`, all eight methods.
+5. `run_split_location.sh` and `run_split_block.sh`: rounds 1 to 10 of
    `split-location` and `split-block`, all eight methods, scored also on
    the 2018 points.
-5. `run_summary.sh`: step 9 on every experiment folder and evaluation
+6. `run_summary.sh`: step 9 on every experiment folder and evaluation
    set.
 
 Start `run_tessera.sh` with 2 workers. When the first tasks end, the RAM
