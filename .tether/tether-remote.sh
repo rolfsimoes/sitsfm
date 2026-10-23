@@ -1,10 +1,10 @@
 #!/bin/sh
 # tether-remote.sh: the server helper of agent-tether (design 9, 6.6).
-# shellcheck disable=SC2015,SC2045  # A && B || C is intended; ids are validated
+# shellcheck disable=SC2015,SC2045,SC1007  # A && B || C is intended; ids are validated
 # POSIX sh and POSIX tools only; awk may be mawk. Run from the root of the
 # project repository: `sh .tether/tether-remote.sh SUBCOMMAND ARGS`.
 # It writes only under .tether/jobs/ (git-ignored). Output is key=value.
-HELPER_VERSION=1
+HELPER_VERSION=2
 JOBS=.tether/jobs
 ROOT=$(pwd)
 export GIT_OPTIONAL_LOCKS=0
@@ -62,6 +62,194 @@ gpu_used_pct() {
         --format=csv,noheader,nounits 2>/dev/null |
         awk -F, '{ if ($2 > 0) { p = $1 * 100 / $2; n++; if (p > m) m = p } }
             END { if (n > 0) { i = int(m); if (m > i) i++; printf "%d\n", i } }'
+}
+
+# cg_scan: reads the job's cgroup (v2 only; hooks TETHER_PROC_CGROUP and
+# TETHER_CGROUP_ROOT). Sets cg_mlev (nearest level, leaf upwards,
+# whose memory.max is a number) with cg_mmax cg_cur cg_ina, and cg_clev
+# (nearest level whose cpu.max quota is a number) with cg_quota cg_period.
+# All empty without cgroup v2 or without a limit.
+cg_scan() {
+    cg_mlev= cg_mmax= cg_cur= cg_ina= cg_clev= cg_quota= cg_period=
+    cg_root=${TETHER_CGROUP_ROOT:-/sys/fs/cgroup}
+    cg_p=$(sed -n 's/^0:://p' "${TETHER_PROC_CGROUP:-/proc/self/cgroup}" 2>/dev/null | head -n1)
+    case "$cg_p" in /*) ;; *) return 0 ;; esac
+    cg_p=${cg_p#/}
+    case "$cg_p" in *[!A-Za-z0-9._/@:\\-]* | *..*) return 0 ;; esac
+    # Levels from the leaf up to and including the root ('.'): a private
+    # cgroup namespace shows the leaf as '/', and a limit may sit at the
+    # root of a deeper path.
+    [ -n "$cg_p" ] || cg_p=.
+    while :; do
+        if [ -z "$cg_mlev" ]; then
+            cg_v=$(head -n1 "$cg_root/$cg_p/memory.max" 2>/dev/null)
+            if is_num "$cg_v" && [ "$cg_v" != 0 ]; then
+                cg_mlev=$cg_p cg_mmax=$cg_v
+                cg_cur=$(head -n1 "$cg_root/$cg_p/memory.current" 2>/dev/null)
+                cg_ina=$(awk '$1 == "inactive_file" { print $2; exit }' "$cg_root/$cg_p/memory.stat" 2>/dev/null)
+                is_num "$cg_cur" || cg_mlev=
+                is_num "$cg_ina" || cg_ina=0
+            fi
+        fi
+        if [ -z "$cg_clev" ]; then
+            cg_q= cg_r=
+            [ -r "$cg_root/$cg_p/cpu.max" ] && read -r cg_q cg_r _ <"$cg_root/$cg_p/cpu.max"
+            if is_num "$cg_q" && is_num "$cg_r" && [ "$cg_q" != 0 ] && [ "$cg_r" != 0 ]; then
+                cg_clev=$cg_p cg_quota=$cg_q cg_period=$cg_r
+            fi
+        fi
+        case "$cg_p" in .) break ;; */*) cg_p=${cg_p%/*} ;; *) cg_p=. ;; esac
+    done
+    return 0
+}
+
+# mem_read: sets MEM_PCT (rounded up) and MEM_SRC (cgroup | host): the job
+# cgroup's memory.current - inactive_file over memory.max when a level has a
+# limit, else the host's meminfo.
+mem_read() {
+    cg_scan
+    MEM_PCT= MEM_SRC=host
+    if [ -n "$cg_mlev" ]; then
+        MEM_PCT=$(awk -v c="$cg_cur" -v i="$cg_ina" -v m="$cg_mmax" 'BEGIN {
+            u = c - i; if (u < 0) u = 0; p = u * 100 / m; k = int(p); if (p > k) k++
+            printf "%d\n", k }')
+        MEM_SRC=cgroup
+    fi
+    if [ -z "$MEM_PCT" ]; then
+        MEM_PCT=$(mem_used_pct)
+        MEM_SRC=host
+    fi
+}
+
+# res_snap: one raw reading, one line of 17 fields ('-' = absent): uptime,
+# cgroup usage_usec, cgroup read bytes, host busy jiffies, RAM used bytes,
+# RAM limit bytes, CPU limit cores, limit source, host RAM used and total
+# bytes, host cores, GPU util %, GPU used and total MiB, memory percent
+# (rounded up) and its source, the fullest GPU's memory percent (rounded up).
+res_snap() {
+    cg_scan
+    rs_up=$(awk '{ print $1; exit }' /proc/uptime 2>/dev/null)
+    rs_ulev=${cg_clev:-$cg_mlev}
+    rs_usec= rs_rb=
+    if [ -n "$rs_ulev" ]; then
+        rs_usec=$(awk '$1 == "usage_usec" { print $2; exit }' "$cg_root/$rs_ulev/cpu.stat" 2>/dev/null)
+        rs_rb=$(awk '{ for (i = 1; i <= NF; i++) if ($i ~ /^rbytes=[0-9]+$/) { s += substr($i, 8); f = 1 } }
+            END { if (f) printf "%.0f\n", s }' "$cg_root/$rs_ulev/io.stat" 2>/dev/null)
+    fi
+    rs_busy=$(awk '$1 == "cpu" { printf "%.0f\n", $2 + $3 + $4 + $7 + $8 + $9; exit }' \
+        "${TETHER_PROC_STAT:-/proc/stat}" 2>/dev/null)
+    rs_hc=$(grep -c '^cpu[0-9]' "${TETHER_PROC_STAT:-/proc/stat}" 2>/dev/null)
+    rs_gpu=$(command -v nvidia-smi >/dev/null 2>&1 &&
+        nvidia-smi --query-gpu=memory.used,memory.total,utilization.gpu \
+            --format=csv,noheader,nounits 2>/dev/null |
+        awk -F', *' '$2 > 0 { n++; u += $1; t += $2; if ($3 + 0 > m) m = $3 + 0
+            if ($1 * 100 / $2 > f) f = $1 * 100 / $2 }
+            END { if (n > 0) { i = int(f); if (f > i) i++; printf "%.0f %.0f %.0f %d\n", m, u, t, i } }')
+    [ -n "$rs_gpu" ] || rs_gpu="- - - -"
+    awk -v up="$rs_up" -v usec="$rs_usec" -v rb="$rs_rb" -v busy="$rs_busy" -v hc="$rs_hc" \
+        -v mlev="$cg_mlev" -v cur="$cg_cur" -v ina="$cg_ina" -v mmax="$cg_mmax" \
+        -v clev="$cg_clev" -v q="$cg_quota" -v per="$cg_period" -v gpu="$rs_gpu" '
+        function nz(v) { return (v == "" ? "-" : v) }
+        /^MemTotal:/ { t = $2 }
+        /^MemAvailable:/ { a = $2 }
+        END {
+            ht = "-"; hu = "-"; pct = "-"
+            if (t > 0) ht = t * 1024
+            if (t > 0 && a != "") {
+                hu = (t - a) * 1024; p = (t - a) * 100 / t; k = int(p); if (p > k) k++; pct = k
+            }
+            src = "host"; used = hu; lim = ht; msrc = "host"
+            if (mlev != "") {
+                u = cur - ina; if (u < 0) u = 0
+                used = u; lim = mmax; src = "cgroup"; msrc = "cgroup"
+                p = u * 100 / mmax; k = int(p); if (p > k) k++; pct = k
+            }
+            cl = (hc > 0 ? hc : "-")
+            if (clev != "") { cl = q / per; src = "cgroup" }
+            split(gpu, g, " ")
+            printf "%s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s %s\n", nz(up), nz(usec), nz(rb),
+                nz(busy), nz(used), nz(lim), cl, src, hu, ht, nz(hc), g[1], g[2], g[3], pct, msrc, nz(g[4])
+        }' "${TETHER_MEMINFO:-/proc/meminfo}" 2>/dev/null
+}
+
+# res_rec PREV CUR: one window record from two readings (rates over the
+# time between them): uptime, CPU cores, RAM GiB, GPU %, GPU GiB, read MB/s,
+# host cores, host RAM GiB, then the limits (CPU cores, RAM GiB, GPU GiB,
+# host cores, host RAM GiB) and the source. '-' = absent.
+res_rec() {
+    awk -v p="$1" -v c="$2" 'BEGIN {
+        split(p, a, " "); split(c, b, " ")
+        dt = b[1] - a[1]
+        cpu = "-"; rd = "-"; hcpu = "-"
+        if (b[1] != "-" && a[1] != "-" && dt > 0) {
+            if (a[2] != "-" && b[2] != "-") cpu = (b[2] - a[2]) / 1e6 / dt
+            if (a[3] != "-" && b[3] != "-") rd = (b[3] - a[3]) / 1e6 / dt
+            if (a[4] != "-" && b[4] != "-") hcpu = (b[4] - a[4]) / 100 / dt
+        } else if (a[2] != "-" && b[2] != "-") cpu = 0
+        if (cpu == "-" && hcpu != "-") cpu = hcpu
+        if (cpu != "-" && cpu < 0) cpu = 0
+        if (rd != "-" && rd < 0) rd = 0
+        if (hcpu != "-" && hcpu < 0) hcpu = 0
+        G = 1073741824
+        printf "%s %s %s %s %s %s %s %s %s %s %s %s %s %s\n", b[1], cpu,
+            (b[5] == "-" ? "-" : b[5] / G), b[12], (b[13] == "-" ? "-" : b[13] / 1024), rd, hcpu,
+            (b[9] == "-" ? "-" : b[9] / G), b[7], (b[6] == "-" ? "-" : b[6] / G),
+            (b[14] == "-" ? "-" : b[14] / 1024), b[11], (b[10] == "-" ? "-" : b[10] / G), b[8]
+    }'
+}
+
+# res_stats MODE: the window (records on stdin) as stats key=value lines:
+# mean, min, max of every reading that is present, limits of the last record.
+res_stats() {
+    awk -v mode="$1" '
+        function fmt(x,   s) { if (x < 0) x = 0; s = sprintf("%.1f", x); sub(/\.0$/, "", s); return s }
+        function num(v) { return v != "-" && v != "" }
+        function lim(k, v) { if (num(v)) printf "%s.limit=%s\n", k, fmt(v) }
+        function emit(k, col, isint,   i, n, s, lo, hi, v) {
+            n = 0
+            for (i = 1; i <= NR; i++) {
+                v = r[i, col]
+                if (!num(v)) continue
+                v += 0
+                if (n == 0 || v < lo) lo = v
+                if (n == 0 || v > hi) hi = v
+                s += v; n++
+            }
+            if (n == 0) return 0
+            if (isint) {
+                printf "%s.mean=%d\n%s.min=%d\n%s.max=%d\n", k, int(s / n + 0.5), k, int(lo + 0.5), k, int(hi + 0.5)
+            } else {
+                printf "%s.mean=%s\n%s.min=%s\n%s.max=%s\n", k, fmt(s / n), k, fmt(lo), k, fmt(hi)
+            }
+            return 1
+        }
+        { for (i = 1; i <= 14; i++) r[NR, i] = $i }
+        END {
+            if (NR == 0) exit
+            span = r[NR, 1] - r[1, 1]; if (span < 0 || r[NR, 1] == "-") span = 0
+            printf "window.mode=%s\nwindow.n=%d\nwindow.span_s=%d\nlimit.source=%s\n", mode, NR, span, r[NR, 14]
+            emit("cpu_cores", 2, 0); lim("cpu_cores", r[NR, 9])
+            emit("ram_gib", 3, 0); lim("ram_gib", r[NR, 10])
+            emit("gpu_pct", 4, 1)
+            emit("gpu_mem_gib", 5, 0); lim("gpu_mem_gib", r[NR, 11])
+            emit("read_mbs", 6, 0)
+            emit("host_cores", 7, 0); lim("host_cores", r[NR, 12])
+            emit("host_ram_gib", 8, 0); lim("host_ram_gib", r[NR, 13])
+        }'
+}
+
+# card_keys: keeps the stats lines the card uses (mean, max and limit of CPU,
+# RAM and GPU memory; mean and max of GPU %); the stats file keeps them all.
+card_keys() {
+    grep -E '^stats\.((cpu_cores|ram_gib|gpu_mem_gib)\.(mean|max|limit)|gpu_pct\.(mean|max))='
+}
+
+# res_instant: one reading as stats lines: two reads one second apart.
+res_instant() {
+    ri_a=$(res_snap)
+    sleep 1
+    ri_b=$(res_snap)
+    res_rec "$ri_a" "$ri_b" | res_stats instant | sed 's/^/stats./' | card_keys
 }
 
 # job_state DIR: running | ended | starting | dead (no exit file, no process)
@@ -177,15 +365,25 @@ cmd_sentinel() {
     id=$1
     valid_id "$id" || exit 2
     d=$JOBS/$id
-    every=${SENTINEL_EVERY:-300}
+    every=${SENTINEL_EVERY:-5}
+    win=${SENTINEL_WINDOW_S:-300}
     kpct=${SENTINEL_KILL_PCT:-95}
-    is_num "$every" && [ "$every" -ge 1 ] || every=300
+    is_num "$every" && [ "$every" -ge 1 ] || every=5
+    is_num "$win" && [ "$win" -ge 1 ] || win=300
     is_num "$kpct" || kpct=95
+    cap=$((win / every))
+    [ "$cap" -le 720 ] || cap=720
+    [ "$cap" -ge 1 ] || cap=1
     trap ':' TERM INT
     trap '' HUP
     [ -s "$d/pid" ] || exit 0
     pid=$(cat "$d/pid")
     st=$(cat "$d/starttime" 2>/dev/null)
+    # The window lives in this shell only: one record per sample, the last
+    # $cap kept, statistics recomputed and the stats file overwritten.
+    W=
+    prev=$(res_snap)
+    sleep 1
     waited=$every
     # One-second slices: the sentinel notices the end of the job within a
     # second and needs no signal (a signal can be lost between samples).
@@ -194,22 +392,37 @@ cmd_sentinel() {
         kill -0 "$pid" 2>/dev/null || exit 0
         if [ "$waited" -ge "$every" ]; then
             waited=0
-            pct=$(mem_used_pct)
-            gpu=$(gpu_used_pct)
+            cur=$(res_snap)
+            rec=$(res_rec "$prev" "$cur")
+            prev=$cur
+            W=$(printf '%s\n%s\n' "$W" "$rec" | sed '/^$/d' | tail -n "$cap")
+            # shellcheck disable=SC2086
+            set -- $cur
+            pct=${15} psrc=${16}
+            is_num "$pct" || pct=
+            gpu=${17}
+            is_num "$gpu" || gpu=
             state=ok
             if is_num "$pct" && [ "$pct" -gt "$kpct" ] &&
                 [ "$(stat_start "$pid")" = "$st" ]; then
                 state=killed
-                printf '=== %s sentinel kill mem_used_pct=%s threshold=%s\n' \
-                    "$(utc)" "$pct" "$kpct" >>"$d/log"
+                if [ "$psrc" = cgroup ]; then
+                    printf '=== %s sentinel kill mem_used_pct=%s threshold=%s source=cgroup\n' \
+                        "$(utc)" "$pct" "$kpct" >>"$d/log"
+                else
+                    printf '=== %s sentinel kill mem_used_pct=%s threshold=%s\n' \
+                        "$(utc)" "$pct" "$kpct" >>"$d/log"
+                fi
             fi
+            printf '%s\n' "$W" | res_stats rolling >"$d/stats.new"
+            mv -f "$d/stats.new" "$d/stats"
             {
                 printf 'sampled_utc=%s\n' "$(utc)"
                 printf 'mem_used_pct=%s\n' "$pct"
                 [ -n "$gpu" ] && printf 'gpu_used_pct=%s\n' "$gpu"
                 printf 'state=%s\n' "$state"
-            } >"$d/sentinel.tmp"
-            mv -f "$d/sentinel.tmp" "$d/sentinel"
+            } >"$d/sentinel.new"
+            mv -f "$d/sentinel.new" "$d/sentinel"
             if [ "$state" = killed ]; then
                 kill -s TERM -- "-$pid" 2>/dev/null
                 sleep 10
@@ -391,9 +604,10 @@ cmd_guard() {
     case "$needs" in gpu | cpu) ;; *) refuse guard bad_needs ;; esac
     is_num "$memmax" || memmax=85
     is_num "$gpumax" || gpumax=85
-    mem=$(mem_used_pct)
+    mem_read
+    mem=$MEM_PCT
     gpu=$(gpu_used_pct)
-    [ -n "$mem" ] && printf 'mem.used_pct=%s\n' "$mem"
+    [ -n "$mem" ] && printf 'mem.used_pct=%s\nmem.source=%s\n' "$mem" "$MEM_SRC"
     [ -n "$gpu" ] && printf 'gpu.used_pct=%s\n' "$gpu"
     reason=
     if is_num "$mem" && [ "$mem" -gt "$memmax" ]; then
@@ -416,6 +630,21 @@ cmd_guard() {
     printf 'guard=go\n'
 }
 
+# job_progress DIR: run.elapsed_s from the pid file's mtime (written when the
+# job starts) and the last strict `tether-progress: N/M` line of the log.
+job_progress() {
+    jp_t=$(date -r "$1/pid" +%s 2>/dev/null || stat -c %Y "$1/pid" 2>/dev/null)
+    if is_num "$jp_t"; then
+        jp_e=$(($(date +%s) - jp_t))
+        [ "$jp_e" -ge 0 ] || jp_e=0
+        printf 'run.elapsed_s=%s\n' "$jp_e"
+    fi
+    [ -f "$1/log" ] && [ ! -L "$1/log" ] || return 0
+    grep -E '^tether-progress: [0-9]{1,9}/[0-9]{1,9}$' "$1/log" 2>/dev/null |
+        awk '{ split($2, a, "/"); if (a[2] + 0 >= 1 && a[1] + 0 <= a[2] + 0) { d = a[1] + 0; t = a[2] + 0; ok = 1 } }
+            END { if (ok) printf "progress.done=%d\nprogress.total=%d\n", d, t }'
+}
+
 cmd_status() {
     printf 'helper.version=%s\n' "$HELPER_VERSION"
     printf 'server.time_utc=%s\n' "$(utc)"
@@ -426,13 +655,15 @@ cmd_status() {
     else
         printf 'repo.dirty=no\n'
     fi
-    run=0 end=0 listed=0 newest=
+    run=0 end=0 listed=0 newest= live=
     for d in $(ls -r "$JOBS" 2>/dev/null); do
         valid_id "$d" || continue
         dir=$JOBS/$d
         [ -d "$dir" ] && [ ! -L "$dir" ] || continue
         [ -n "$newest" ] || newest=$d
-        case "$(job_state "$dir")" in
+        js=$(job_state "$dir")
+        [ "$js" = running ] && [ -z "$live" ] && live=$d
+        case "$js" in
         running | starting) run=$((run + 1)); state=running ;;
         *) end=$((end + 1)); state=ended ;;
         esac
@@ -452,8 +683,16 @@ cmd_status() {
         t=$(sed -n 's/^sampled_utc=//p' "$JOBS/$newest/sentinel" | head -n1)
         printf 'sentinel.%s=%s mem_used_pct=%s sampled=%s\n' "$newest" "$s" "$p" "$t"
     fi
-    m=$(mem_used_pct)
-    [ -n "$m" ] && printf 'mem.used_pct=%s\n' "$m"
+    mem_read
+    [ -n "$MEM_PCT" ] && printf 'mem.used_pct=%s\nmem.source=%s\n' "$MEM_PCT" "$MEM_SRC"
+    # The newest running job's window; else one instant reading.
+    if [ -n "$live" ] && [ -f "$JOBS/$live/stats" ] && [ ! -L "$JOBS/$live/stats" ] &&
+        grep -q '^window\.n=' "$JOBS/$live/stats" 2>/dev/null; then
+        grep -E '^[a-z_]+(\.[a-z_]+)?=[a-z0-9.]+$' "$JOBS/$live/stats" | sed 's/^/stats./' | card_keys
+    else
+        res_instant
+    fi
+    [ -z "$live" ] || job_progress "$JOBS/$live"
     g=$(gpu_used_pct)
     [ -n "$g" ] && printf 'gpu.used_pct=%s\n' "$g"
     cmd_guard "${1:-gpu}" "${2:-85}" "${3:-85}" | grep -v 'used_pct=' | awk '
