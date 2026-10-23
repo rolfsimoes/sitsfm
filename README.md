@@ -153,10 +153,17 @@ job before it ends; `run_tessera.sh` runs on the CPU, beside them:
    tasks), beside the tasks already there. Its accuracies, against
    those of `ts_mlp` and `ts_tempcnn` in the same round and fractions,
    decide whether the raw time series methods of every experiment must
-   run again on the 6 bands. Step 9 leaves these two methods out.
+   run again on the 6 bands.
 2. `run_split_year.sh`: the held-out label years (`split-year`, 4
    rounds), the six methods before TESSERA.
-3. `run_tessera.sh`: the TESSERA queue, `tessera_y` then
+3. `run_bands_full.sh`: `ts_mlp6` and `ts_tempcnn6` in every folder:
+   `split-70-30` (10 rounds, internal test only; the 4 tasks of the
+   check are skipped), then `val-2018` (round 1), `split-year` (4
+   rounds), `split-location` and `split-block` (round 1), scored also on
+   the 2018 points (268 tasks). Its accuracies replace those of `ts_mlp`
+   and `ts_tempcnn` in the table and figure of the paper, so the raw time
+   series and the encoders are compared on the same 6 bands.
+4. `run_tessera.sh`: the TESSERA queue, `tessera_y` then
    `tessera_unit_y` in each folder: `split-70-30` (10 rounds, internal
    test only), then `val-2018` (round 1), `split-year` (4 rounds),
    `split-location` and `split-block` (round 1), scored also on the 2018
@@ -166,12 +173,14 @@ job before it ends; `run_tessera.sh` runs on the CPU, beside them:
    on the CPU. Its budget beside a GPU job of up to 80 GiB is 150 GiB of RAM
    (the cgroup has 316 GiB, and tether stops the jobs at 95%). The
    argument is the number of workers (default 2).
-4. `run_val2018.sh`: rounds 1 to 10 of `val-2018`, all eight methods.
-5. `run_split_location.sh` and `run_split_block.sh`: rounds 1 to 10 of
-   `split-location` and `split-block`, all eight methods, scored also on
-   the 2018 points.
-6. `run_summary.sh`: step 9 on every experiment folder and evaluation
-   set.
+5. `run_val2018.sh`: rounds 1 to 10 of `val-2018`, all eight methods,
+   the raw time series as `ts_mlp6` and `ts_tempcnn6`; round 1 of
+   `ts_mlp` and `ts_tempcnn` stays and is not extended.
+6. `run_split_location.sh` and `run_split_block.sh`: rounds 1 to 10 of
+   `split-location` and `split-block`, the same eight methods, scored
+   also on the 2018 points.
+7. `run_summary.sh`: step 9 on every experiment folder and evaluation
+   set, with `ts_mlp6` as the baseline of the paired differences.
 
 Start `run_tessera.sh` with 2 workers. When the first tasks end, the RAM
 line of the job card (`tether status`) gives the cost per worker; stop
@@ -198,19 +207,22 @@ for one evaluation set (`round-RR/split-70-30/`, the internal test, or
 `data/results/sbsr2027/split-70-30`) and writes, in its
 `summary/EVALUATION/`, the mean and standard deviation
 over rounds of each method and fraction (overall accuracy, kappa, macro F1,
-F1 per class), the paired differences of each method against the MLP on
-the raw time series with their 95% interval, plain (`ci_low`, `ci_high`)
+F1 per class), the paired differences of each method against a baseline,
+the MLP on the raw time series (`ts_mlp`, or `ts_mlp6` on the 6 bands),
+with their 95% interval, plain (`ci_low`, `ci_high`)
 and corrected for the shared samples of the rounds as in Nadeau and Bengio
 (2003) (`nb_low`, `nb_high`), and two figures: the learning curve and the
 paired differences. It works on a run
 in progress; `n_rounds` says how many rounds each number uses. With one
 round the standard deviation and the interval are NA, and the figures have
-no band and no bars. The optional arguments are the experiment folder and
-the evaluation set (`split-70-30`, the default, or `val-2018`):
+no band and no bars. The optional arguments are the experiment folder,
+the evaluation set (`split-70-30`, the default, or `val-2018`) and the
+baseline (`ts_mlp`, the default, or `ts_mlp6`); it stops if the folder
+has no task files of the baseline:
 
 ```
 Rscript analysis/sbsr2027/summary_learning_curve.R
-Rscript analysis/sbsr2027/summary_learning_curve.R data/results/sbsr2027/val-2018 val-2018
+Rscript analysis/sbsr2027/summary_learning_curve.R data/results/sbsr2027/val-2018 val-2018 ts_mlp6
 ```
 
 10. `sbsr2027/check_learning_curve.R`: reruns 16 recorded tasks of step 8 (rounds

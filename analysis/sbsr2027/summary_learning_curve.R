@@ -8,18 +8,21 @@
 # have no band and no bars.
 #
 # Optional arguments: experiment folder (default
-# data/results/sbsr2027/split-70-30) and evaluation set (split-70-30, the
-# default, or val-2018), e.g.
+# data/results/sbsr2027/split-70-30), evaluation set (split-70-30, the
+# default, or val-2018) and baseline of the paired differences (ts_mlp, the
+# default, or ts_mlp6), e.g.
 #   Rscript analysis/sbsr2027/summary_learning_curve.R
-#   Rscript analysis/sbsr2027/summary_learning_curve.R data/results/sbsr2027/val-2018 val-2018
+#   Rscript analysis/sbsr2027/summary_learning_curve.R data/results/sbsr2027/val-2018 val-2018 ts_mlp6
 library(glue)
 library(ggplot2)
 
 args <- commandArgs(trailingOnly = TRUE)
 results_dir <- "data/results/sbsr2027/split-70-30"
 evaluation <- "split-70-30"
+baseline <- "ts_mlp"
 if (length(args) >= 1) results_dir <- args[[1]]
 if (length(args) >= 2) evaluation <- args[[2]]
+if (length(args) >= 3) baseline <- args[[3]]
 stopifnot(evaluation %in% c("split-70-30", "val-2018"))
 summary_dir <- fs::dir_create(fs::path(results_dir, "summary", evaluation))
 
@@ -28,17 +31,24 @@ method_names <- c(
   vicreg = "VICReg + MLP",
   lejepa = "LeJEPA + MLP",
   ts_mlp = "MLP, time series",
+  ts_mlp6 = "MLP, time series, 6 bands",
   ae_centre_y = "AlphaEarth centre Y + MLP",
   ts_tempcnn = "TempCNN, time series",
+  ts_tempcnn6 = "TempCNN, time series, 6 bands",
   tessera_y = "TESSERA Y + MLP",
   tessera_unit_y = "TESSERA unit Y + MLP"
 )
 # fixed categorical order (dataviz reference palette, slots 1 to 6, then
-# green and red; the shapes tell the pairs close for colour blindness apart)
-method_colors <- c("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#8a5cd6", "#008300", "#e34948")
+# green and red; the shapes tell the pairs close for colour blindness apart).
+# The 6-band methods follow their 10-band method, in raspberry and indigo.
+method_colors <- c(
+  "#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#a3366a",
+  "#e87ba4", "#8a5cd6", "#4a3aa7", "#008300", "#e34948"
+)
 names(method_colors) <- method_names
-method_shapes <- c(16, 17, 15, 18, 4, 8, 3, 1)
+method_shapes <- c(16, 17, 15, 18, 5, 4, 8, 6, 3, 1)
 names(method_shapes) <- method_names
+stopifnot(baseline %in% names(method_names))
 
 #
 # 1. Read the task files
@@ -103,7 +113,10 @@ split_ratio <- with(
   dplyr::filter(results, .data[["fraction"]] == max(.data[["fraction"]])),
   mean(n_valid) / mean(n_train)
 )
-paired <- purrr::map_dfr(c("ts_mlp"), function(base) {
+if (!baseline %in% overall[["method"]]) {
+  stop(glue("{results_dir} has no task files of the baseline {baseline}"))
+}
+paired <- purrr::map_dfr(baseline, function(base) {
   base_acc <- dplyr::select(
     dplyr::filter(overall, method == base),
     round, fraction, base_accuracy = accuracy
@@ -191,7 +204,7 @@ diff_plot <- ggplot(plot_diff, aes(fraction, diff_mean, colour = method, shape =
   scale_shape_manual(values = method_shapes) +
   labs(
     x = "Fraction of the training samples (log scale)",
-    y = "Accuracy minus MLP, time series",
+    y = glue("Accuracy minus {method_names[[baseline]]}"),
     caption = if (one_round) {
       "1 round."
     } else {
