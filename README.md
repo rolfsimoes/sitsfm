@@ -123,9 +123,7 @@ points (Mangrove, Nat_NonVeg, Water) count as errors. The predicted class
 of each point goes to `round-RR/val-2018/round_RR_METHOD_fFFF_pred.csv` (`row` in
 `validation_data_2018.parquet`, `label`, `predicted`). The points in the
 input of each method are saved once in `inputs/` of the results folder
-(`val2018_series.rds`, `val2018_encoded_METHOD.rds`). Each
-task trains with its share of the CPU quota as torch threads, divided
-among the processes on the GPU. A stage run of one
+(`val2018_series.rds`, `val2018_encoded_METHOD.rds`). A stage run of one
 round, two fractions, one encoder and the TempCNN on the raw time series,
 in 4 workers:
 
@@ -135,8 +133,8 @@ Rscript analysis/sbsr2027/accuracy_learning_curve.R 1 0.05,1 btwins,ts_tempcnn h
 
 The runs on the server are scripts for `tether start`, one per job.
 Each runs its Rscript calls one after another, with one OpenBLAS thread
-per R process; the learning curve runs in 8 workers and skips the tasks
-already done. Its `tether-progress` line counts the tasks of the current
+per R process; the GPU runners run the learning curve in 8 workers, and
+every run skips the tasks already done. Its `tether-progress` line counts the tasks of the current
 Rscript call; that of `run_summary.sh` counts the summaries.
 The GPU jobs are started one script after the other, each after the
 job before it ends; `run_tessera.sh` runs on the CPU, beside them:
@@ -150,9 +148,9 @@ job before it ends; `run_tessera.sh` runs on the CPU, beside them:
    points. After `split-70-30` it runs step 7 on the other folders, which
    keeps their splits and only links the new encoded samples. It hides
    the GPU (`CUDA_VISIBLE_DEVICES` empty), so sits trains and classifies
-   on the CPU. Each worker takes the CPU quota divided by the processes
-   on the GPU plus one: beside the 8 workers of `run_split_year.sh`,
-   12 torch threads of a quota of 112, 96 for its 8 workers.
+   on the CPU. Its budget beside a GPU job of up to 80 GiB is 150 GiB of RAM
+   (the cgroup has 316 GiB, and tether stops the jobs at 95%). The
+   argument is the number of workers (default 2).
 3. `run_val2018.sh`: rounds 1 to 10 of `val-2018`, all eight methods.
 4. `run_split_location.sh` and `run_split_block.sh`: rounds 1 to 10 of
    `split-location` and `split-block`, all eight methods, scored also on
@@ -160,8 +158,13 @@ job before it ends; `run_tessera.sh` runs on the CPU, beside them:
 5. `run_summary.sh`: step 9 on every experiment folder and evaluation
    set.
 
+Start `run_tessera.sh` with 2 workers. When the first tasks end, the RAM
+line of the job card (`tether status`) gives the cost per worker; stop
+the job and start it again with the number of workers that stays within
+150 GiB. Done tasks are skipped.
+
 ```
-tether start --needs cpu analysis/sbsr2027/run_tessera.sh
+tether start --needs cpu analysis/sbsr2027/run_tessera.sh 2
 ```
 
 On the GPU an MLP task takes from about 80 s (5% of the labels) to
