@@ -101,7 +101,7 @@ labelled_samples <- read_samples()
 #
 # AlphaEarth methods: embeddings at the sample points, one file per image
 # year, rows in the order of the labelled samples
-ae_repo <- "rolfsimoes/samples_cerrado_aef"
+ae_repo <- "e-sensing/samples_cerrado_aef"
 ae_files <- list(
   ae_centre_y = "alphaearth_labelled_centre_y.parquet"
 )
