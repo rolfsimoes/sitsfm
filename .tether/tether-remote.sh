@@ -631,7 +631,8 @@ cmd_guard() {
 }
 
 # job_progress DIR: run.elapsed_s from the pid file's mtime (written when the
-# job starts) and the last strict `tether-progress: N/M` line of the log.
+# job starts) and the last strict `tether-progress: N/M` line of the log;
+# progress.first is N of the first valid line (work done before the job).
 job_progress() {
     jp_t=$(date -r "$1/pid" +%s 2>/dev/null || stat -c %Y "$1/pid" 2>/dev/null)
     if is_num "$jp_t"; then
@@ -641,8 +642,8 @@ job_progress() {
     fi
     [ -f "$1/log" ] && [ ! -L "$1/log" ] || return 0
     grep -E '^tether-progress: [0-9]{1,9}/[0-9]{1,9}$' "$1/log" 2>/dev/null |
-        awk '{ split($2, a, "/"); if (a[2] + 0 >= 1 && a[1] + 0 <= a[2] + 0) { d = a[1] + 0; t = a[2] + 0; ok = 1 } }
-            END { if (ok) printf "progress.done=%d\nprogress.total=%d\n", d, t }'
+        awk '{ split($2, a, "/"); if (a[2] + 0 >= 1 && a[1] + 0 <= a[2] + 0) { d = a[1] + 0; t = a[2] + 0; if (!ok) f = d; ok = 1 } }
+            END { if (ok) printf "progress.first=%d\nprogress.done=%d\nprogress.total=%d\n", f, d, t }'
 }
 
 cmd_status() {
