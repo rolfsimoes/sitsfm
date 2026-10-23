@@ -94,6 +94,12 @@ write.csv(summary_f1, fs::path(summary_dir, "summary_f1_class.csv"), row.names =
 #
 # 3. Paired differences: method minus baseline, inside each round
 #
+# test to training ratio of the split, from the tasks that use the whole
+# training side (0.43 for the 70/30 split)
+split_ratio <- with(
+  dplyr::filter(results, .data[["fraction"]] == max(.data[["fraction"]])),
+  mean(n_valid) / mean(n_train)
+)
 paired <- purrr::map_dfr(c("ts_mlp"), function(base) {
   base_acc <- dplyr::select(
     dplyr::filter(overall, method == base),
@@ -112,6 +118,10 @@ paired <- purrr::map_dfr(c("ts_mlp"), function(base) {
     # 95% interval of the mean difference (t, n_rounds - 1 degrees of freedom)
     ci_low = diff_mean - qt(0.975, pmax(n_rounds - 1, 1)) * diff_sd / sqrt(n_rounds),
     ci_high = diff_mean + qt(0.975, pmax(n_rounds - 1, 1)) * diff_sd / sqrt(n_rounds),
+    # Nadeau and Bengio (2003) corrected resampled t: the rounds share
+    # samples, so 1/n_rounds becomes 1/n_rounds + n_test/n_train of the split
+    nb_low = diff_mean - qt(0.975, pmax(n_rounds - 1, 1)) * diff_sd * sqrt(1 / n_rounds + split_ratio),
+    nb_high = diff_mean + qt(0.975, pmax(n_rounds - 1, 1)) * diff_sd * sqrt(1 / n_rounds + split_ratio),
     .groups = "drop"
   )
 })

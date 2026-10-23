@@ -280,6 +280,10 @@ for (task in tasks) {
     }
   }
 }
+# every task file of the run, for the progress line tether reads
+progress_files <- purrr::map_chr(tasks, function(task) {
+  as.character(task_file(task$ith_run, task$method, task$frac))
+})
 done <- purrr::map_lgl(tasks, function(task) {
   task_done(task_file(task$ith_run, task$method, task$frac), task$frac) &&
     (val2018 == "none" || task_done(val2018_task_file(task$ith_run, task$method, task$frac), task$frac))
@@ -531,6 +535,7 @@ run_task <- function(task) {
   fs::dir_create(fs::path_dir(file))
   write.csv(result, glue("{file}.tmp"), row.names = FALSE)
   fs::file_move(glue("{file}.tmp"), file)
+  message(glue("tether-progress: {sum(fs::file_exists(progress_files))}/{length(progress_files)}"))
   invisible(file)
 }
 
@@ -601,7 +606,7 @@ if (n_workers <= 1) {
     "base_stream", "round_stream", "fraction_stream", "split_file", "task_file",
     "worker_cache", "cached", "run_task", "cpu_quota", "n_workers",
     "gpu_processes", "task_threads", "set_threads", "val2018", "val2018_file",
-    "val2018_task_file", "val_rows", "sits_md5", "sitsfm_commit"
+    "val2018_task_file", "val_rows", "sits_md5", "sitsfm_commit", "progress_files"
   ))
   invisible(parallel::parLapplyLB(cl, tasks, run_task))
   parallel::stopCluster(cl)
