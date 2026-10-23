@@ -130,6 +130,10 @@ in 4 workers:
 Rscript analysis/sbsr2027/accuracy_learning_curve.R 1 0.05,1 btwins,ts_tempcnn hf 4
 ```
 
+The run of the held-out label years (`split-year`, 4 rounds) is
+`bash analysis/sbsr2027/run_split_year.sh`; it is the script for
+`tether start`.
+
 9. `sbsr2027/summary_learning_curve.R`: reads the result files of step 8
 for one evaluation set (`round-RR/split-70-30/`, the internal test, or
 `round-RR/val-2018/`, the 2018 points) of an experiment folder (default
@@ -137,8 +141,10 @@ for one evaluation set (`round-RR/split-70-30/`, the internal test, or
 `summary/EVALUATION/`, the mean and standard deviation
 over rounds of each method and fraction (overall accuracy, kappa, macro F1,
 F1 per class), the paired differences of each method against the MLP on
-the raw time series with their 95% interval, and two
-figures: the learning curve and the paired differences. It works on a run
+the raw time series with their 95% interval, plain (`ci_low`, `ci_high`)
+and corrected for the shared samples of the rounds as in Nadeau and Bengio
+(2003) (`nb_low`, `nb_high`), and two figures: the learning curve and the
+paired differences. It works on a run
 in progress; `n_rounds` says how many rounds each number uses. With one
 round the standard deviation and the interval are NA, and the figures have
 no band and no bars. The optional arguments are the experiment folder and
