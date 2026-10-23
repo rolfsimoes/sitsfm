@@ -9,7 +9,7 @@ This package contains scripts for running foundational models using the `sits` p
 
 The scripts can be found in the `analysis` directory. All data necessary 
 to run them in on Hugging Face. The results of each step are also available
-in Hugging Face. The scripts of the SBSR 2027 experiments (steps 7 to 11
+in Hugging Face. The scripts of the SBSR 2027 experiments (steps 7 to 12
 and the AlphaEarth scripts) are in `analysis/sbsr2027` and write their
 results in `data/results/sbsr2027` (see "Results of the SBSR 2027
 experiments" below).
@@ -89,8 +89,11 @@ Barlow Twins encoders, frozen, each with an MLP trained on its embeddings,
 against an MLP and a TempCNN trained on the raw time series. The method
 `ae_centre_y` trains the same MLP on AlphaEarth embeddings: the vector of
 the 10 m pixel that contains each sample, in the label year, read from the
-Hugging Face dataset named by `ae_repo` in the script. It is not in the
-default methods, so it runs only when named. Each round
+Hugging Face dataset named by `ae_repo` in the script. The methods
+`tessera_y` and `tessera_unit_y` train it on TESSERA embeddings (step 12)
+of the label year, read from the dataset named by `tessera_repo`: the
+vector as read, and the vector divided by its L2 norm. These methods are
+not in the default methods, so they run only when named. Each round
 reads its split from step 7 (`round_RR_split.rds`) and trains every
 method on the same nested fractions of the training side; the run stops
 if a split file is missing or lacks a fraction asked for. Each round, method and fraction is one task
@@ -130,9 +133,46 @@ in 4 workers:
 Rscript analysis/sbsr2027/accuracy_learning_curve.R 1 0.05,1 btwins,ts_tempcnn hf 4
 ```
 
-The run of the held-out label years (`split-year`, 4 rounds) is
-`bash analysis/sbsr2027/run_split_year.sh`; it is the script for
-`tether start`.
+The runs on the server are scripts for `tether start`, one per job.
+Each runs its Rscript calls one after another, with one OpenBLAS thread
+per R process; the learning curve runs in 8 workers and skips the tasks
+already done. Its `tether-progress` line counts the tasks of the current
+Rscript call; that of `run_summary.sh` counts the summaries.
+The GPU jobs are started one script after the other, each after the
+job before it ends; `run_tessera.sh` runs on the CPU, beside them:
+
+1. `run_split_year.sh`: the held-out label years (`split-year`, 4
+   rounds), the six methods before TESSERA.
+2. `run_tessera.sh`: the TESSERA queue, `tessera_y` then
+   `tessera_unit_y` in each folder: `split-70-30` (10 rounds, internal
+   test only), then `val-2018` (round 1), `split-year` (4 rounds),
+   `split-location` and `split-block` (round 1), scored also on the 2018
+   points. After `split-70-30` it runs step 7 on the other folders, which
+   keeps their splits and only links the new encoded samples. It hides
+   the GPU (`CUDA_VISIBLE_DEVICES` empty), so sits trains and classifies
+   on the CPU. Each worker takes the CPU quota divided by the processes
+   on the GPU plus one: beside the 8 workers of `run_split_year.sh`,
+   12 torch threads of a quota of 112, 96 for its 8 workers.
+3. `run_val2018.sh`: rounds 1 to 10 of `val-2018`, all eight methods.
+4. `run_split_location.sh` and `run_split_block.sh`: rounds 1 to 10 of
+   `split-location` and `split-block`, all eight methods, scored also on
+   the 2018 points.
+5. `run_summary.sh`: step 9 on every experiment folder and evaluation
+   set.
+
+```
+tether start --needs cpu analysis/sbsr2027/run_tessera.sh
+```
+
+On the GPU an MLP task takes from about 80 s (5% of the labels) to
+about 2,000 s (100%), so the CPU rate is compared by fraction. When the
+first tasks of `tessera_y` end, read their seconds in the job log
+(`tether log ID --grep 'tessera_y fraction .*: accuracy'`) and compare
+them with the `seconds` metric of `ae_centre_y` at the same round and
+fraction, in `round_01_ae_centre_y_fFFF.csv` of
+`data/results/sbsr2027/split-70-30/round-01/split-70-30/`. If the CPU
+is more than 3 times slower, stop the job (`tether stop ID`): finished
+tasks are kept, and the queue runs on the GPU when it is free.
 
 9. `sbsr2027/summary_learning_curve.R`: reads the result files of step 8
 for one evaluation set (`round-RR/split-70-30/`, the internal test, or
@@ -201,6 +241,31 @@ folder and the number of cores:
 ```
 Rscript analysis/sbsr2027/validation_series_2018.R check
 Rscript analysis/sbsr2027/validation_series_2018.R all ~/rascunho-gpu/biomasbr-sits/cerrado/cubes 16
+```
+
+12. `sbsr2027/tessera_samples.R`: turns the TESSERA vectors (version 1.1,
+variant dclimate, 128 dimensions, the 10 m pixel that contains the point)
+read at the labelled samples and at the 2018 validation points
+(`data/results/alphaearth/tessera/tessera_SET_YEAR.parquet`: id,
+longitude, latitude, year, status, `T000` to `T127`) into sits samples
+in `data/results/alphaearth/tessera/samples/`, two versions of each set:
+`tessera_SET_y.parquet`, the vector as read (not unit length), and
+`tessera_SET_unit_y.parquet`, the vector divided by its L2 norm. Each
+sample has one date (1 January of the label year) and the bands `T000`
+to `T127`; row `i` is sample `i` of the points of
+`analysis/sbsr2027/alphaearth_points.R`, so the ids match the splits.
+A point with no TESSERA data gets a zero vector and is counted. The
+labels and coordinates come from the AlphaEarth labelled samples and
+from `validation_data_2018.parquet`, so the labelled samples are not
+loaded. The script prints a summary and the failed checks, and exits
+with status 1 if a check fails. These files are the Hugging Face dataset
+that step 8 reads. Optional arguments are the sets and a number of points
+for a check, which takes evenly spaced points and every point with no
+data and writes to `samples_check/` instead:
+
+```
+Rscript analysis/sbsr2027/tessera_samples.R labelled,validation2018 300
+Rscript analysis/sbsr2027/tessera_samples.R
 ```
 
 ## Results of the SBSR 2027 experiments

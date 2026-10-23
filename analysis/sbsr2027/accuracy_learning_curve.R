@@ -1,6 +1,6 @@
-# Paired learning curve: accuracy of encoders + MLP, of AlphaEarth
-# embeddings + MLP and of MLP and TempCNN on the raw time series, by
-# fraction of the training samples.
+# Paired learning curve: accuracy of encoders + MLP, of AlphaEarth and
+# TESSERA embeddings + MLP and of MLP and TempCNN on the raw time series,
+# by fraction of the training samples.
 # Each round reads its split of the labelled samples (round_RR_split.rds,
 # written by make_splits.R); all methods of a round use the same split and
 # the same nested fractions.
@@ -24,7 +24,8 @@
 # labelled samples on Hugging Face), workers, results folder, 2018
 # validation points ("none", "all", or a number of them for a check), e.g.
 #   Rscript analysis/sbsr2027/accuracy_learning_curve.R 1 0.05,1 btwins,ts_tempcnn hf 2
-# The AlphaEarth methods (ae_*) are not in the default methods; name them.
+# The AlphaEarth (ae_*) and TESSERA (tessera_*) methods are not in the
+# default methods; name them.
 # With 2018 validation points, each task also classifies them and writes
 # their metrics and predicted classes in val-2018/ of its round.
 library(sits)
@@ -109,11 +110,29 @@ ae_files <- list(
 ae_val2018_files <- list(
   ae_centre_y = "alphaearth_validation2018_centre_y.parquet"
 )
-alphaearth_samples <- function(method) {
-  files <- ae_files[[method]]
+# TESSERA methods, in the same layout: the vector of the label year as
+# read (tessera_y) and divided by its L2 norm (tessera_unit_y)
+tessera_repo <- "e-sensing/samples_cerrado_tessera"
+tessera_files <- list(
+  tessera_y = "tessera_labelled_y.parquet",
+  tessera_unit_y = "tessera_labelled_unit_y.parquet"
+)
+tessera_val2018_files <- list(
+  tessera_y = "tessera_validation2018_y.parquet",
+  tessera_unit_y = "tessera_validation2018_unit_y.parquet"
+)
+# methods read from Hugging Face: their files and repository
+hf_files <- c(ae_files, tessera_files)
+hf_val2018_files <- c(ae_val2018_files, tessera_val2018_files)
+hf_repo <- c(
+  rep(list(ae_repo), length(ae_files)), rep(list(tessera_repo), length(tessera_files))
+)
+names(hf_repo) <- names(hf_files)
+embedding_samples <- function(method) {
+  files <- hf_files[[method]]
   # the Y - 1 and Y methods will list two files and join their bands
   stopifnot(length(files) == 1)
-  samples <- sits_from_hf(repo = ae_repo, file = files, type = "dataset")
+  samples <- sits_from_hf(repo = hf_repo[[method]], file = files, type = "dataset")
   # same points in the same order, so the row number is the id
   stopifnot(
     nrow(samples) == nrow(labelled_samples),
@@ -140,8 +159,8 @@ encode_samples <- function(model) {
   if (fs::file_exists(enc_file)) {
     return(invisible(enc_file))
   }
-  if (model %in% names(ae_files)) {
-    samples_enc <- alphaearth_samples(model)
+  if (model %in% names(hf_files)) {
+    samples_enc <- embedding_samples(model)
   } else {
     samples_enc <- sits_encode(
       data = labelled_samples,
@@ -191,8 +210,8 @@ encode_val2018 <- function(method) {
   started <- Sys.time()
   if (startsWith(method, "ts_")) {
     val_enc <- val_series
-  } else if (method %in% names(ae_val2018_files)) {
-    val_enc <- sits_from_hf(repo = ae_repo, file = ae_val2018_files[[method]], type = "dataset")
+  } else if (method %in% names(hf_val2018_files)) {
+    val_enc <- sits_from_hf(repo = hf_repo[[method]], file = hf_val2018_files[[method]], type = "dataset")
     val_enc <- val_enc[val_rows, ]
     # both files follow the parquet order; coordinates read by two routes
     stopifnot(

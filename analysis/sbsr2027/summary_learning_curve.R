@@ -29,12 +29,15 @@ method_names <- c(
   lejepa = "LeJEPA + MLP",
   ts_mlp = "MLP, time series",
   ae_centre_y = "AlphaEarth centre Y + MLP",
-  ts_tempcnn = "TempCNN, time series"
+  ts_tempcnn = "TempCNN, time series",
+  tessera_y = "TESSERA Y + MLP",
+  tessera_unit_y = "TESSERA unit Y + MLP"
 )
-# fixed categorical order (dataviz reference palette, slots 1 to 6)
-method_colors <- c("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#8a5cd6")
+# fixed categorical order (dataviz reference palette, slots 1 to 6, then
+# green and red; the shapes tell the pairs close for colour blindness apart)
+method_colors <- c("#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#8a5cd6", "#008300", "#e34948")
 names(method_colors) <- method_names
-method_shapes <- c(16, 17, 15, 18, 4, 8)
+method_shapes <- c(16, 17, 15, 18, 4, 8, 3, 1)
 names(method_shapes) <- method_names
 
 #
