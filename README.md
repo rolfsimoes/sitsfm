@@ -142,7 +142,8 @@ per R process; the GPU runners run the learning curve in 8 workers, and
 every run skips the tasks already done. Its `tether-progress` line counts the tasks of the current
 Rscript call; that of `run_summary.sh` counts the summaries.
 The GPU jobs are started one script after the other, each after the
-job before it ends; `run_tessera.sh` runs on the CPU, beside them:
+job before it ends; `run_tessera.sh` and `run_split_block_cpu.sh` run
+on the CPU, beside them:
 
 1. `run_bands_check.sh`: runs first, because it decides whether the
    comparison of the encoders with the raw time series is fair. It
@@ -173,13 +174,23 @@ job before it ends; `run_tessera.sh` runs on the CPU, beside them:
    on the CPU. Its budget beside a GPU job of up to 80 GiB is 150 GiB of RAM
    (the cgroup has 316 GiB, and tether stops the jobs at 95%). The
    argument is the number of workers (default 2).
-5. `run_val2018.sh`: rounds 1 to 10 of `val-2018`, all eight methods,
+5. `run_split_block_cpu.sh`: rounds 1 to 10 of `split-block` for the
+   seven MLP methods (all but `ts_tempcnn6`), scored also on the 2018
+   points, so that `run_split_block.sh` later skips them and trains
+   only the TempCNN. It hides the GPU as `run_tessera.sh` does and runs
+   beside the GPU job:
+   `tether start --needs cpu analysis/sbsr2027/run_split_block_cpu.sh 2`
+   (the argument is the number of workers, default 2). It must end or
+   be stopped before the GPU queue reaches `split-block`, because two
+   jobs on one folder may run the same task twice. Measured on 24 Oct,
+   the GPU job plus 2 CPU workers peaked at 222 GiB of 316.
+6. `run_val2018.sh`: rounds 1 to 10 of `val-2018`, all eight methods,
    the raw time series as `ts_mlp6` and `ts_tempcnn6`; round 1 of
    `ts_mlp` and `ts_tempcnn` stays and is not extended.
-6. `run_split_location.sh` and `run_split_block.sh`: rounds 1 to 10 of
+7. `run_split_location.sh` and `run_split_block.sh`: rounds 1 to 10 of
    `split-location` and `split-block`, the same eight methods, scored
    also on the 2018 points.
-7. `run_summary.sh`: step 9 on every experiment folder and evaluation
+8. `run_summary.sh`: step 9 on every experiment folder and evaluation
    set, with `ts_mlp6` as the baseline of the paired differences.
 
 Start `run_tessera.sh` with 2 workers. When the first tasks end, the RAM
