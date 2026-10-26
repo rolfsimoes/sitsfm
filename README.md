@@ -366,6 +366,21 @@ analysis/sbsr2027/organize_results.sh > tmp/organize_plan.txt
 analysis/sbsr2027/organize_results.sh --apply
 ```
 
+`analysis/sbsr2027/pack_results.sh` packs every `*.csv` under
+`data/results/sbsr2027` (task files, `_pred.csv` and summaries, with their
+relative paths; no `.rds`, models or logs) into
+`data/results/sbsr2027/export/sbsr2027_csv.tar.gz`, so that one
+`tether fetch` brings them to the local machine. Next to it it writes
+`sbsr2027_csv.sha256`, the sha256 of each packed file (check with
+`sha256sum -c` in the extracted folder). Both are written under a temporary
+name and renamed at the end. With `--no-pred` it leaves out the `_pred.csv`
+files, the largest ones, and writes `sbsr2027_csv_nopred.*`. Start it as a
+job:
+
+```
+tether start analysis/sbsr2027/pack_results.sh
+```
+
 ## Server tools
 
 `server/` holds tools for the server where the learning curve runs; they
