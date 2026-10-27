@@ -343,6 +343,10 @@ split-GEOMETRY/              location, block or year splits (step 7)
   round-RR/                  as in split-70-30
   summary/
   logs/
+repro-check/                 retrained tasks (run_repro_check.sh)
+  cpu/EXPERIMENT/            experiment folders of links and new task files
+  gpu/EXPERIMENT/
+  comparison.csv
 ```
 
 A round folder has `val-2018/` only where the evaluation on the 2018
@@ -379,6 +383,31 @@ job:
 
 ```
 tether start analysis/sbsr2027/pack_results.sh
+```
+
+`analysis/sbsr2027/run_repro_check.sh` retrains 11 recorded tasks, one
+after another, on the CPU (`CUDA_VISIBLE_DEVICES` empty) or on the GPU,
+and compares each new task file with the recorded one: TESSERA
+(`tessera_y`, round 2 of split-70-30, 5%) on both devices, three
+split-block tasks recorded on the CPU on both devices, and three tasks
+of unknown device, written before the tether jobs, on the GPU. The
+script header lists the tasks and why they were chosen. A rerun on the
+device of the recorded run must equal the recorded file in every metric
+row; a rerun on the other device is expected to differ. Each device and
+experiment has a scratch experiment folder in
+`data/results/sbsr2027/repro-check/` with links to the inputs, the
+splits and the recorded task files of the earlier rounds, so the
+learning-curve script trains the asked round only and writes nothing in
+a recorded folder. It writes `repro-check/comparison.csv` (task, device,
+recorded_device, metric, class, recorded, rerun, equal) and prints one
+line per comparison; `pack_results.sh` packs the new task files and
+`comparison.csv`, not the links. `--dry-run` checks every input, split,
+recorded file and device and prints the 11 trainings without training;
+start it first:
+
+```
+tether start analysis/sbsr2027/run_repro_check.sh --dry-run
+tether start analysis/sbsr2027/run_repro_check.sh
 ```
 
 ## Server tools
