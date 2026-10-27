@@ -23,7 +23,7 @@
 #   3. TESSERA: tessera_y, split-70-30 round 2, on the CPU and on the GPU.
 #      Recorded on the CPU in split-70-30 (accuracy 0.937342903001121) and
 #      on the GPU in val-2018 (0.914842070197753); the two split files
-#      must hold identical R objects. It runs first.
+#      must hold the same validation and training ids. It runs first.
 #
 # Each training runs accuracy_learning_curve.R (one worker, internal test
 # only) with CUDA_VISIBLE_DEVICES empty for the CPU and as inherited for
@@ -54,7 +54,7 @@
 # fails; 2 on a wrong argument.
 set -euo pipefail
 
-VERSION=0.1.1
+VERSION=0.1.2
 dry=0
 res=data/results/sbsr2027
 while [ $# -gt 0 ]; do
@@ -155,9 +155,22 @@ device_env() {
     "$@"
   fi
 }
-# split files $1 and $2 hold identical R objects
+# split files $1 and $2 hold the same sets of ids in `valid` and in each
+# fraction of `train`; training selects rows with %in%, so order and the
+# other fields do not matter. Prints the parts that differ.
 same_split() {
-  [ "$(Rscript -e 'a <- commandArgs(TRUE); cat(identical(readRDS(a[1]), readRDS(a[2])))' "$1" "$2")" = TRUE ]
+  local diff
+  # shellcheck disable=SC2016 # the $ belong to R, not to the shell
+  diff=$(Rscript -e '
+    f <- commandArgs(TRUE); a <- readRDS(f[1]); b <- readRDS(f[2])
+    ids <- function(x) sort(as.integer(x))
+    fr <- union(names(a$train), names(b$train))
+    d <- c(valid = !identical(ids(a$valid), ids(b$valid)),
+      setNames(vapply(fr, function(k) !identical(ids(a$train[[k]]), ids(b$train[[k]])), logical(1)), paste0("train ", fr)))
+    cat(if (any(d)) paste(names(d)[d], collapse = ", ") else "same")' "$1" "$2" 2>&1) || true
+  [ "$diff" = same ] && return 0
+  echo "split $2 against $1: differs in $diff" >&2
+  return 1
 }
 # torch must see CUDA on the GPU and not on the CPU
 check_device() {
@@ -217,8 +230,7 @@ main() {
       [ "${rkey% * *}" = "$key" ] || continue
       n_cmp=$((n_cmp + 1))
       need "$(task_file "$round" "$method" "$pct" "$res/$rexp")"
-      # a record of another experiment folder must come from the same split;
-      # the content is compared, as saveRDS may write equal objects differently
+      # a record of another experiment folder must come from the same split
       if [ "$rexp" != "$exp" ] && ! same_split "$(split_file "$res/$exp" "$round")" "$(split_file "$res/$rexp" "$round")"; then
         fail "split differs: $(split_file "$res/$rexp" "$round")"
       fi
