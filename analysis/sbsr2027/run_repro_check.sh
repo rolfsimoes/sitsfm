@@ -23,7 +23,7 @@
 #   3. TESSERA: tessera_y, split-70-30 round 2, on the CPU and on the GPU.
 #      Recorded on the CPU in split-70-30 (accuracy 0.937342903001121) and
 #      on the GPU in val-2018 (0.914842070197753); the two split files
-#      must be byte-identical. It runs first.
+#      must hold identical R objects. It runs first.
 #
 # Each training runs accuracy_learning_curve.R (one worker, internal test
 # only) with CUDA_VISIBLE_DEVICES empty for the CPU and as inherited for
@@ -54,7 +54,7 @@
 # fails; 2 on a wrong argument.
 set -euo pipefail
 
-VERSION=0.1.0
+VERSION=0.1.1
 dry=0
 res=data/results/sbsr2027
 while [ $# -gt 0 ]; do
@@ -155,6 +155,10 @@ device_env() {
     "$@"
   fi
 }
+# split files $1 and $2 hold identical R objects
+same_split() {
+  [ "$(Rscript -e 'a <- commandArgs(TRUE); cat(identical(readRDS(a[1]), readRDS(a[2])))' "$1" "$2")" = TRUE ]
+}
 # torch must see CUDA on the GPU and not on the CPU
 check_device() {
   local dev=$1 cuda
@@ -213,8 +217,9 @@ main() {
       [ "${rkey% * *}" = "$key" ] || continue
       n_cmp=$((n_cmp + 1))
       need "$(task_file "$round" "$method" "$pct" "$res/$rexp")"
-      # a record of another experiment folder must come from the same split
-      if [ "$rexp" != "$exp" ] && ! cmp -s "$(split_file "$res/$exp" "$round")" "$(split_file "$res/$rexp" "$round")"; then
+      # a record of another experiment folder must come from the same split;
+      # the content is compared, as saveRDS may write equal objects differently
+      if [ "$rexp" != "$exp" ] && ! same_split "$(split_file "$res/$exp" "$round")" "$(split_file "$res/$rexp" "$round")"; then
         fail "split differs: $(split_file "$res/$rexp" "$round")"
       fi
     done
