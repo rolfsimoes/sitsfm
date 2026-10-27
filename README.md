@@ -323,6 +323,8 @@ split-70-30/                 the 10-round experiment
     models/                  round_RR_METHOD_fFFF.rds and .json
   summary/split-70-30/       summary tables and figures of the internal test
   checks/                    reproduction checks of this experiment
+  cpu-trained/               CPU-trained tasks moved aside, any experiment
+                             (run_gpu_retrain.sh)
   logs/
 val-2018/                    round 1 also scored on the 24,000 points of 2018
   inputs/                    labelled_samples.rds, encoded_METHOD.rds,
@@ -408,6 +410,13 @@ start it first:
 ```
 tether start analysis/sbsr2027/run_repro_check.sh --dry-run
 tether start analysis/sbsr2027/run_repro_check.sh
+```
+
+`analysis/sbsr2027/run_gpu_retrain.sh` replaces every CPU-trained task by a GPU-trained one, because a CPU task does not reproduce, even on the CPU: on 27 Oct 2026 `run_repro_check.sh` gave 5 of 5 GPU tasks equal in every row and 5 of 5 CPU tasks different by 0.4 to 1.8 pp. The tasks are listed in `analysis/sbsr2027/cpu_trained_tasks.csv` (experiment, round, method, percent, action), derived from the device inventory of the sbsr-paper repository (`tmp/device-inventory.csv`, 27 Oct 2026; the rows with device `cpu`): 380 tasks. For each task the script moves the task CSV, the CSV and predictions on the 2018 points and the saved model and its `.json` into `EXPERIMENT/cpu-trained/` under the same relative path, so nothing is deleted and the learning-curve script neither skips the task nor reads its CPU model; it refuses to move a file whose task is not on the list. The 144 tasks with action `copy` (TESSERA in split-70-30, rounds 2 to 10) take the GPU-trained task CSV of `val-2018/round-RR/split-70-30/`, after a check that both experiments have the same split ids in that round. The other 236 tasks are trained again with the GPU visible, with the arguments of the runner that wrote each experiment and 8 workers (the script header lists them); `tether-progress` counts these 236 tasks. Before any move it checks the listed files, the inputs, the splits, the CUDA device, and that no task outside the list would train. A rerun after an interruption resumes. `--dry-run` runs the checks and prints the files to move and copy and the tasks to train, and writes nothing; start it first:
+
+```
+tether start analysis/sbsr2027/run_gpu_retrain.sh --dry-run
+tether start analysis/sbsr2027/run_gpu_retrain.sh
 ```
 
 ## Server tools
