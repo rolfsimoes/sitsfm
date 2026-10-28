@@ -349,6 +349,9 @@ repro-check/                 retrained tasks (run_repro_check.sh)
   cpu/EXPERIMENT/            experiment folders of links and new task files
   gpu/EXPERIMENT/
   comparison.csv
+  repro_sample_tasks/        the same for a task list (--tasks)
+    gpu/EXPERIMENT/
+    comparison.csv
 ```
 
 A round folder has `val-2018/` only where the evaluation on the 2018
@@ -417,6 +420,16 @@ tether start analysis/sbsr2027/run_repro_check.sh
 ```
 tether start analysis/sbsr2027/run_gpu_retrain.sh --dry-run
 tether start analysis/sbsr2027/run_gpu_retrain.sh
+```
+
+TempCNN does not reproduce on the GPU with the same seed and split, probably because the order of the parallel sums of the convolutions changes between runs; the MLP methods reproduce exactly. The 80 `ts_tempcnn6` tasks of split-70-30 were trained a second time in val-2018 (same splits, same internal test): 77 differ, by a mean absolute difference in accuracy of 0.06 pp (sd 0.05, at most 0.23). This is smaller than the standard deviation over rounds (0.09 to 0.18 pp), which already includes it.
+
+`run_repro_check.sh --tasks FILE` tests the final results, after `run_gpu_retrain.sh`, on a random sample of tasks listed in `FILE` (experiment, round, method, percent). `analysis/sbsr2027/repro_sample_tasks.csv` holds one task per experiment and MLP-family method: 35 tasks, from 5 experiments and 7 methods (every method except `ts_tempcnn` and `ts_tempcnn6`, which do not reproduce on the GPU, and `ts_mlp`, the 10 bands the paper does not use). `analysis/sbsr2027/repro_sample.R` drew it once with seed 1524: for each pair, a round and a fraction among the recorded tasks whose files of the earlier rounds also exist, because the rerun links them. Run again, the R script compares its draw with the file and stops if they differ; it never overwrites the file. Each task is trained on the GPU, one after another with one worker, in a scratch folder of links as above, `repro-check/repro_sample_tasks/gpu/EXPERIMENT/`, so the 11 trainings and their `comparison.csv` stay as they are. In split-70-30 it compares the internal-test file; in the other four experiments it also scores the 2018 points, as their runners did, and compares that file too. A rerun must equal its recorded file in every row except `seconds`. The script writes `repro-check/repro_sample_tasks/comparison.csv` (recorded device `final`) and prints how many tasks are equal in every row. If all 35 are equal, the share of tasks that do not reproduce is below 3/35 = 8.6% with 95% confidence (rule of three). The recorded seconds of the 35 tasks add up to 41,571 s; 7 GPU reruns with one worker took 0.26 to 0.80 of their recorded seconds (median 0.34), so the run should take about 4 h (3 to 9 h). Check the draw against the results on the server, then start the dry run first:
+
+```
+Rscript analysis/sbsr2027/repro_sample.R
+tether start analysis/sbsr2027/run_repro_check.sh --dry-run --tasks analysis/sbsr2027/repro_sample_tasks.csv
+tether start analysis/sbsr2027/run_repro_check.sh --tasks analysis/sbsr2027/repro_sample_tasks.csv
 ```
 
 ## Server tools
